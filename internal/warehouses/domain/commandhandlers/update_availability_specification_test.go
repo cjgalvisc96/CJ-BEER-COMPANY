@@ -161,6 +161,90 @@ func TestAllocationBeyondAvailabilityRecordsQuantityNotFound(t *testing.T) {
 	}.Run(t)
 }
 
+// TestRedrivenAllocationIsIdempotent (book Ch. 12: retried steps must not
+// produce side effects): the order already holds stock, so the re-driven
+// command re-emits the fact with the quantity UNCHANGED.
+func TestRedrivenAllocationIsIdempotent(t *testing.T) {
+	beerId := sharedkernel.BeerId{Value: uuid.New()}
+	beerName := sharedkernel.BeerName{Value: "Muflone IPA"}
+	correlationId := uuid.New()
+	salesOrderId := uuid.NewString()
+
+	muflone.CommandSpecification[commands.UpdateAvailabilityDueToSalesOrder]{
+		StreamName: domain.StreamName,
+		Given: func() []muflone.DomainEvent {
+			return []muflone.DomainEvent{
+				events.NewAvailabilityUpdatedDueToProductionOrder(
+					beerId, correlationId, beerName, customtypes.NewQuantity(100, "Lt"),
+				),
+				events.NewBeerAvailabilityUpdated(
+					beerId, correlationId, beerName, customtypes.NewQuantity(70, "Lt"), salesOrderId,
+				),
+			}
+		},
+		When: func() commands.UpdateAvailabilityDueToSalesOrder {
+			return commands.NewUpdateAvailabilityDueToSalesOrder(
+				beerId, correlationId, beerName, customtypes.NewQuantity(30, "Lt"), salesOrderId,
+			)
+		},
+		OnHandler: func(store muflone.EventStore) muflone.CommandHandler[commands.UpdateAvailabilityDueToSalesOrder] {
+			return commandhandlers.NewUpdateAvailabilityDueToSalesOrderCommandHandler(
+				newAvailabilityRepository(store), slog.Default(),
+			)
+		},
+		Expect: func() []muflone.DomainEvent {
+			return []muflone.DomainEvent{
+				events.NewBeerAvailabilityUpdated(
+					beerId, correlationId, beerName, customtypes.NewQuantity(70, "Lt"), salesOrderId,
+				),
+			}
+		},
+	}.Run(t)
+}
+
+// TestRedrivenCompensationIsIdempotent: the stock was already given back —
+// the duplicate compensation re-emits the fact with the total UNCHANGED.
+func TestRedrivenCompensationIsIdempotent(t *testing.T) {
+	beerId := sharedkernel.BeerId{Value: uuid.New()}
+	beerName := sharedkernel.BeerName{Value: "Muflone IPA"}
+	correlationId := uuid.New()
+	salesOrderId := uuid.NewString()
+
+	muflone.CommandSpecification[commands.CompensateAvailabilityDueToFailedAllocation]{
+		StreamName: domain.StreamName,
+		Given: func() []muflone.DomainEvent {
+			return []muflone.DomainEvent{
+				events.NewAvailabilityUpdatedDueToProductionOrder(
+					beerId, correlationId, beerName, customtypes.NewQuantity(100, "Lt"),
+				),
+				events.NewBeerAvailabilityUpdated(
+					beerId, correlationId, beerName, customtypes.NewQuantity(70, "Lt"), salesOrderId,
+				),
+				events.NewAvailabilityCompensated(
+					beerId, correlationId, beerName, customtypes.NewQuantity(100, "Lt"), salesOrderId,
+				),
+			}
+		},
+		When: func() commands.CompensateAvailabilityDueToFailedAllocation {
+			return commands.NewCompensateAvailabilityDueToFailedAllocation(
+				beerId, correlationId, customtypes.NewQuantity(30, "Lt"), salesOrderId,
+			)
+		},
+		OnHandler: func(store muflone.EventStore) muflone.CommandHandler[commands.CompensateAvailabilityDueToFailedAllocation] {
+			return commandhandlers.NewCompensateAvailabilityDueToFailedAllocationCommandHandler(
+				newAvailabilityRepository(store), slog.Default(),
+			)
+		},
+		Expect: func() []muflone.DomainEvent {
+			return []muflone.DomainEvent{
+				events.NewAvailabilityCompensated(
+					beerId, correlationId, beerName, customtypes.NewQuantity(100, "Lt"), salesOrderId,
+				),
+			}
+		},
+	}.Run(t)
+}
+
 // TestCompensationRestoresAllocatedQuantity: the compensating transaction
 // (book Ch. 12, backward recovery) gives allocated stock back.
 func TestCompensationRestoresAllocatedQuantity(t *testing.T) {

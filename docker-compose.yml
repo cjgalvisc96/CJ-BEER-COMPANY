@@ -19,6 +19,15 @@ services:
       timeout: 3s
       retries: 15
 
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    container_name: cjbeer-rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
   migrate:
     image: arigaio/atlas
     container_name: cjbeer-migrate
@@ -45,11 +54,16 @@ services:
       # Durable mode: event store + read models live in Postgres, so data
       # survives restarts (in-memory mode is for `task run` and tests).
       DB_URL: postgres://${DB_USER:-beer}:${DB_PASSWORD:-beerpassword}@postgres:5432/${DB_NAME:-beer}?sslmode=disable
+      # Broker mode: RabbitMQ carries the messages (durable queues), so
+      # in-flight work survives restarts too.
+      BROKER_URL: amqp://guest:guest@rabbitmq:5672/
     ports:
       - "8080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
 
   seed:
     image: alpine/curl

@@ -58,6 +58,30 @@ func (s *PostgresEventStore) ReadStream(ctx context.Context, streamID string) ([
 	return stored, nil
 }
 
+// ListStreams returns the stream ids under a prefix, sorted.
+func (s *PostgresEventStore) ListStreams(ctx context.Context, streamPrefix string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT stream_id FROM events WHERE stream_id LIKE $1 ORDER BY stream_id`,
+		streamPrefix+"-%")
+	if err != nil {
+		return nil, fmt.Errorf("list streams %s: %w", streamPrefix, err)
+	}
+	defer rows.Close()
+
+	var streams []string
+	for rows.Next() {
+		var streamID string
+		if err := rows.Scan(&streamID); err != nil {
+			return nil, fmt.Errorf("list streams %s: %w", streamPrefix, err)
+		}
+		streams = append(streams, streamID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list streams %s: %w", streamPrefix, err)
+	}
+	return streams, nil
+}
+
 func (s *PostgresEventStore) Append(
 	ctx context.Context,
 	streamID string,

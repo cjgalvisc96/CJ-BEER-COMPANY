@@ -78,7 +78,7 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 	sagaRepository := muflone.NewEventStoreRepository(
 		store, domain.NewOrderAllocationSaga, domain.SagaStreamName, bus,
 	)
-	saga := sagas.NewOrderAllocationSaga(sagaRepository, bus, logger)
+	saga := sagas.NewOrderAllocationSaga(sagaRepository, store, bus, logger)
 	bus.SubscribeIntegrationEvent("warehouses.saga.on_sales_order_created",
 		sagas.SalesOrderCreatedTopic, saga.OnSalesOrderCreated)
 	muflone.RegisterDomainEventHandler(bus, "warehouses.saga.on_beer_availability_updated",
@@ -87,6 +87,9 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 		saga.OnQuantityNotFound)
 	muflone.RegisterDomainEventHandler(bus, "warehouses.saga.on_availability_compensated",
 		saga.OnAvailabilityCompensated)
+	// The composition root resumes in-flight sagas once the bus runs, and
+	// drives the step-timeout watchdog (durable execution, ADR-0008).
+	do.ProvideValue(injector, saga)
 
 	do.Provide(injector, func(i do.Injector) (*Facade, error) {
 		return NewFacade(bus, readModel), nil

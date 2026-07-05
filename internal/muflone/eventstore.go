@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +36,13 @@ type EventStore interface {
 	// Append adds events with an optimistic-concurrency check:
 	// expectedVersion must equal the current stream length.
 	Append(ctx context.Context, streamID string, expectedVersion int, commitID uuid.UUID, events []DomainEvent) error
+}
+
+// StreamLister enumerates streams by prefix — what a saga resumer needs to
+// find in-flight processes after a restart (durable execution, book
+// Ch. 12). Both provided stores implement it.
+type StreamLister interface {
+	ListStreams(ctx context.Context, streamPrefix string) ([]string, error)
 }
 
 // InMemoryEventStore keeps streams in memory. It doubles as the
@@ -86,6 +95,20 @@ func (s *InMemoryEventStore) Append(
 	}
 	s.streams[streamID] = stream
 	return nil
+}
+
+// ListStreams returns the stream ids under a prefix, sorted.
+func (s *InMemoryEventStore) ListStreams(_ context.Context, streamPrefix string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var streams []string
+	for streamID := range s.streams {
+		if strings.HasPrefix(streamID, streamPrefix+"-") {
+			streams = append(streams, streamID)
+		}
+	}
+	sort.Strings(streams)
+	return streams, nil
 }
 
 // Seed installs prior history without recording it as appended — the

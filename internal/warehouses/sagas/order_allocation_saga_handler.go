@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -44,19 +46,23 @@ type salesOrderCreatedMessage struct {
 	} `json:"rows"`
 }
 
-// OrderAllocationSaga coordinates the allocation of one sales order.
+// OrderAllocationSaga coordinates the allocation of one sales order. The
+// store powers durable execution: ListStreams finds in-flight sagas after
+// a restart, ReadStream dates them for the step timeout.
 type OrderAllocationSaga struct {
 	repository muflone.Repository[*domain.OrderAllocationSaga]
+	store      muflone.EventStore
 	bus        *muflone.ServiceBus
 	logger     *slog.Logger
 }
 
 func NewOrderAllocationSaga(
 	repository muflone.Repository[*domain.OrderAllocationSaga],
+	store muflone.EventStore,
 	bus *muflone.ServiceBus,
 	logger *slog.Logger,
 ) *OrderAllocationSaga {
-	return &OrderAllocationSaga{repository: repository, bus: bus, logger: logger}
+	return &OrderAllocationSaga{repository: repository, store: store, bus: bus, logger: logger}
 }
 
 // OnSalesOrderCreated starts the saga. Redelivered triggers are idempotent:
@@ -128,24 +134,7 @@ func (s *OrderAllocationSaga) OnQuantityNotFound(ctx context.Context, event even
 	if saga.Status() == domain.SagaRejected { // nothing was allocated yet
 		return s.publishOutcome(ctx, saga, event.CommitID())
 	}
-	// Compensations are sent exactly once: on the transition into
-	// compensating (idempotency — book Ch. 12).
-	for _, row := range saga.RowsToCompensate() {
-		beerId, err := uuid.Parse(row.BeerId)
-		if err != nil {
-			return fmt.Errorf("saga %s: invalid beer id %q", saga.SalesOrderId(), row.BeerId)
-		}
-		command := commands.NewCompensateAvailabilityDueToFailedAllocation(
-			sharedkernel.BeerId{Value: beerId},
-			event.CommitID(),
-			customtypes.NewQuantity(row.Quantity, row.UnitOfMeasure),
-			saga.SalesOrderId(),
-		)
-		if err := s.bus.Send(ctx, command); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.sendCompensations(ctx, saga, event.CommitID())
 }
 
 // OnAvailabilityCompensated closes the loop of one compensating
@@ -204,6 +193,145 @@ func (s *OrderAllocationSaga) sendNextAllocation(ctx context.Context, saga *doma
 		saga.SalesOrderId(),
 	)
 	return s.bus.Send(ctx, command)
+}
+
+// sendCompensations dispatches the compensating transactions for every row
+// still holding stock. Safe to re-drive: the Availability aggregate treats
+// duplicate compensations as idempotent re-emissions.
+func (s *OrderAllocationSaga) sendCompensations(ctx context.Context, saga *domain.OrderAllocationSaga, commitId uuid.UUID) error {
+	for _, row := range saga.RowsToCompensate() {
+		beerId, err := uuid.Parse(row.BeerId)
+		if err != nil {
+			return fmt.Errorf("saga %s: invalid beer id %q", saga.SalesOrderId(), row.BeerId)
+		}
+		command := commands.NewCompensateAvailabilityDueToFailedAllocation(
+			sharedkernel.BeerId{Value: beerId},
+			commitId,
+			customtypes.NewQuantity(row.Quantity, row.UnitOfMeasure),
+			saga.SalesOrderId(),
+		)
+		if err := s.bus.Send(ctx, command); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ResumeInFlight re-drives every unfinished saga after a restart (book
+// Ch. 12, durable execution): running sagas re-send their pending step,
+// compensating sagas re-send their compensations. All downstream effects
+// are idempotent, so resuming a saga whose outcome was already applied is
+// harmless.
+func (s *OrderAllocationSaga) ResumeInFlight(ctx context.Context) error {
+	sagasInFlight, err := s.inFlight(ctx)
+	if err != nil {
+		return err
+	}
+	for _, saga := range sagasInFlight {
+		s.logger.Info("warehouses.saga.resumed",
+			slog.String("sales_order_id", saga.SalesOrderId()),
+			slog.String("status", string(saga.Status())))
+		if err := s.drive(ctx, saga, uuid.New()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// TimeoutInFlight fails the pending step of every saga whose last recorded
+// event is older than the cutoff (book Ch. 12: steps must not wait
+// forever). Compensating sagas are re-driven instead — compensation is
+// never abandoned.
+func (s *OrderAllocationSaga) TimeoutInFlight(ctx context.Context, cutoff time.Time) error {
+	sagasInFlight, err := s.inFlight(ctx)
+	if err != nil {
+		return err
+	}
+	for _, saga := range sagasInFlight {
+		lastActivity, err := s.lastActivityOf(ctx, saga)
+		if err != nil {
+			return err
+		}
+		if !lastActivity.Before(cutoff) {
+			continue
+		}
+		if saga.Status() == domain.SagaCompensating {
+			s.logger.Warn("warehouses.saga.compensation_redriven",
+				slog.String("sales_order_id", saga.SalesOrderId()))
+			if err := s.sendCompensations(ctx, saga, uuid.New()); err != nil {
+				return err
+			}
+			continue
+		}
+		row, _ := saga.NextPendingRow()
+		s.logger.Warn("warehouses.saga.step_timed_out",
+			slog.String("sales_order_id", saga.SalesOrderId()),
+			slog.String("beer_id", row.BeerId))
+		commitId := uuid.New()
+		// A running saga always has a pending row, so the record always
+		// transitions.
+		saga.RecordQuantityNotFound(commitId, row.BeerId, "allocation step timed out")
+		if err := s.repository.Save(ctx, saga, uuid.New()); err != nil {
+			return err
+		}
+		if saga.Status() == domain.SagaRejected {
+			if err := s.publishOutcome(ctx, saga, commitId); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.sendCompensations(ctx, saga, commitId); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// drive re-issues whatever an in-flight saga is waiting on.
+func (s *OrderAllocationSaga) drive(ctx context.Context, saga *domain.OrderAllocationSaga, commitId uuid.UUID) error {
+	if saga.Status() == domain.SagaCompensating {
+		return s.sendCompensations(ctx, saga, commitId)
+	}
+	return s.sendNextAllocation(ctx, saga, commitId)
+}
+
+// inFlight loads every saga that is not settled yet.
+func (s *OrderAllocationSaga) inFlight(ctx context.Context) ([]*domain.OrderAllocationSaga, error) {
+	lister, ok := s.store.(muflone.StreamLister)
+	if !ok {
+		s.logger.Warn("warehouses.saga.store_cannot_list_streams")
+		return nil, nil
+	}
+	streams, err := lister.ListStreams(ctx, domain.SagaStreamName)
+	if err != nil {
+		return nil, err
+	}
+	var inFlight []*domain.OrderAllocationSaga
+	for _, streamID := range streams {
+		orderId, err := uuid.Parse(strings.TrimPrefix(streamID, domain.SagaStreamName+"-"))
+		if err != nil {
+			s.logger.Warn("warehouses.saga.unparseable_stream", slog.String("stream", streamID))
+			continue
+		}
+		saga, err := s.repository.GetByID(ctx, orderId)
+		if err != nil {
+			return nil, err
+		}
+		if saga.Status() == domain.SagaRunning || saga.Status() == domain.SagaCompensating {
+			inFlight = append(inFlight, saga)
+		}
+	}
+	return inFlight, nil
+}
+
+// lastActivityOf returns when the saga last recorded an event.
+func (s *OrderAllocationSaga) lastActivityOf(ctx context.Context, saga *domain.OrderAllocationSaga) (time.Time, error) {
+	orderId := uuid.MustParse(saga.SalesOrderId())
+	stored, err := s.store.ReadStream(ctx, domain.SagaStreamName+"-"+orderId.String())
+	if err != nil {
+		return time.Time{}, err
+	}
+	return stored[len(stored)-1].OccurredAt, nil
 }
 
 func (s *OrderAllocationSaga) publishOutcome(ctx context.Context, saga *domain.OrderAllocationSaga, commitId uuid.UUID) error {

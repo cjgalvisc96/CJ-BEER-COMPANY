@@ -37,7 +37,7 @@ func newFixture(t *testing.T, busClosed bool) *sagaFixture {
 	return &sagaFixture{
 		store: store,
 		bus:   bus,
-		saga:  sagas.NewOrderAllocationSaga(repository, bus, slog.Default()),
+		saga:  sagas.NewOrderAllocationSaga(repository, store, bus, slog.Default()),
 	}
 }
 
@@ -232,7 +232,7 @@ func TestStorageFaultsSurfaceForRedelivery(t *testing.T) {
 			failGet:  failGet,
 			failSave: failSave,
 		}
-		return sagas.NewOrderAllocationSaga(repository, bus, slog.Default())
+		return sagas.NewOrderAllocationSaga(repository, store, bus, slog.Default())
 	}
 	started := events.NewOrderAllocationStarted(orderId, uuid.New(), rows)
 	allocatedA := events.NewAllocationStepSucceeded(orderId, uuid.New(), beerA.String())

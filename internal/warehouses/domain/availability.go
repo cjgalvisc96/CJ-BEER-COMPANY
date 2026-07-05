@@ -19,17 +19,24 @@ var ErrInvalidQuantity = muflone.ErrInvalid("quantity must be positive")
 // Availability tracks how much of one beer the warehouse can sell. Its
 // events carry the NEW cumulative quantity, matching the book's
 // specification test (100 Lt given + 100 Lt produced → event with 200 Lt).
+//
+// Saga steps are IDEMPOTENT here (book Ch. 12: retried steps must not
+// produce side effects): the aggregate remembers which sales orders
+// currently hold stock, so a re-driven allocation or compensation re-emits
+// the fact with an unchanged quantity instead of moving stock twice.
 type Availability struct {
 	muflone.AggregateRoot
 
 	beerId   sharedkernel.BeerId
 	beerName sharedkernel.BeerName
 	quantity customtypes.Quantity
+	// held tracks the sales orders with stock currently allocated.
+	held map[string]struct{}
 }
 
 // NewAvailability returns an empty aggregate for stream replay.
 func NewAvailability() *Availability {
-	availability := &Availability{}
+	availability := &Availability{held: make(map[string]struct{})}
 	availability.Bind(availability)
 	return availability
 }
@@ -80,6 +87,13 @@ func (a *Availability) UpdateDueToSalesOrder(
 	if quantity.Value <= 0 {
 		return ErrInvalidQuantity
 	}
+	if _, alreadyHeld := a.held[salesOrderId]; alreadyHeld {
+		// Re-driven step (saga resume / redelivery): the stock already
+		// moved — re-emit the fact with the unchanged quantity so the
+		// saga can catch up, without allocating twice.
+		a.RaiseEvent(events.NewBeerAvailabilityUpdated(a.beerId, commitId, a.beerName, a.quantity, salesOrderId))
+		return nil
+	}
 	if quantity.Value > a.quantity.Value {
 		a.RaiseEvent(events.NewQuantityNotFound(
 			a.beerId, commitId, salesOrderId, quantity, a.quantity,
@@ -118,6 +132,12 @@ func (a *Availability) CompensateDueToFailedAllocation(
 	if quantity.Value <= 0 {
 		return ErrInvalidQuantity
 	}
+	if _, holds := a.held[salesOrderId]; !holds {
+		// Re-driven compensation: the stock was already given back —
+		// re-emit the fact unchanged (idempotent, book Ch. 12).
+		a.RaiseEvent(events.NewAvailabilityCompensated(a.beerId, commitId, a.beerName, a.quantity, salesOrderId))
+		return nil
+	}
 	newTotal := customtypes.NewQuantity(a.quantity.Value+quantity.Value, a.quantity.UnitOfMeasure)
 	a.RaiseEvent(events.NewAvailabilityCompensated(a.beerId, commitId, a.beerName, newTotal, salesOrderId))
 	return nil
@@ -130,8 +150,12 @@ func (a *Availability) Route(event muflone.DomainEvent) {
 		a.applyAvailabilityUpdated(e.BeerId, e.BeerName, e.Quantity)
 	case events.BeerAvailabilityUpdated:
 		a.applyAvailabilityUpdated(e.BeerId, e.BeerName, e.Quantity)
+		if e.SalesOrderId != "" { // events stored before ADR-0007's field
+			a.held[e.SalesOrderId] = struct{}{}
+		}
 	case events.AvailabilityCompensated:
 		a.applyAvailabilityUpdated(e.BeerId, e.BeerName, e.Quantity)
+		delete(a.held, e.SalesOrderId)
 	case events.QuantityNotFound:
 		// A refusal changes no quantity; it only anchors the stream id.
 		s := e.BeerId

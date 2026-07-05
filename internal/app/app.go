@@ -21,6 +21,7 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/rest"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses"
+	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/sagas"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -55,7 +56,20 @@ func New(cfg config.Config) (*App, error) {
 		logger.Info("persistence.in_memory")
 	}
 
-	bus := muflone.NewServiceBus(logger)
+	// Broker mode: RabbitMQ on the wire (the book's transport), so
+	// messages survive restarts too; otherwise the in-process GoChannel.
+	var bus *muflone.ServiceBus
+	if cfg.BrokerURL != "" {
+		transport, err := muflone.NewAMQPTransport(cfg.BrokerURL, logger)
+		if err != nil {
+			return nil, err
+		}
+		bus = muflone.NewServiceBusWithTransport(transport, logger)
+		logger.Info("messaging.broker", slog.String("transport", "amqp"))
+	} else {
+		bus = muflone.NewServiceBus(logger)
+		logger.Info("messaging.in_memory")
+	}
 
 	sales.Register(injector, bus)
 	warehouses.Register(injector, bus)
@@ -80,6 +94,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}()
 	<-a.bus.Running()
+	a.startSagaSupervision(ctx)
 
 	server := &nethttp.Server{Addr: a.cfg.HTTPAddr, Handler: a.engine}
 	go func() {
@@ -105,6 +120,33 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("bus shutdown: %w", err)
 	}
 	return nil
+}
+
+// startSagaSupervision implements the durable-execution duties of the
+// composition root (ADR-0008): resume in-flight sagas at boot, then watch
+// for timed-out steps.
+func (a *App) startSagaSupervision(ctx context.Context) {
+	saga := do.MustInvoke[*sagas.OrderAllocationSaga](a.Injector)
+	if err := saga.ResumeInFlight(ctx); err != nil {
+		a.logger.Error("saga.resume_failed", slog.String("error", err.Error()))
+	}
+	if a.cfg.SagaStepTimeout <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(a.cfg.SagaStepTimeout / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := saga.TimeoutInFlight(ctx, time.Now().Add(-a.cfg.SagaStepTimeout)); err != nil {
+					a.logger.Error("saga.timeout_sweep_failed", slog.String("error", err.Error()))
+				}
+			}
+		}
+	}()
 }
 
 // Engine exposes the HTTP handler for tests.

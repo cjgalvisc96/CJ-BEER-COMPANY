@@ -325,6 +325,6 @@ func TestServiceBusUnmarshalErrorsAreReported(t *testing.T) {
 
 func publishRaw(t *testing.T, bus *ServiceBus, topic, payload string) {
 	t.Helper()
-	require.NoError(t, bus.pubSub.Publish(topic,
+	require.NoError(t, bus.publisher.Publish(topic,
 		message.NewMessage(watermill.NewUUID(), []byte(payload))))
 }

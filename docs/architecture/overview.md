@@ -60,7 +60,11 @@ library used by BrewUp. It provides:
 - `EventRegistry` — rehydrates stored events by type name, with
   **upcasters** for schema evolution (ADR-0007, book Ch. 11)
 - `ServiceBus` — commands via producer-consumer (one handler), events via
-  pub/sub, on Watermill (the book uses RabbitMQ; a transport detail)
+  pub/sub, on a pluggable `Transport`: in-process GoChannel by default,
+  **RabbitMQ** (the book's broker) via `BROKER_URL` — durable queue per
+  handler, fan-out on shared topics, competing consumers across replicas
+  (ADR-0009). Failing handlers are retried with backoff, then the message
+  is parked on the `brewup.dead_letter` topic (never lost, never blocking)
 - `CommandSpecification` — the Given/When/Expect test harness
 
 ## How a request flows (CQRS + ES)

@@ -50,10 +50,21 @@ involves compensating transactions (Table 12.2).
   the order.
 - The saga's stream is a complete audit of the process — "the movie" of
   the allocation, queryable in the event store.
-- Crash resume is possible from the saga stream; an automatic resumer
-  (re-driving in-flight sagas at boot) and step timeouts/dead-letter
-  queues (Ch. 12's durable-execution extras) are the next ADR when a
-  real broker arrives.
+- **Durable execution is implemented, not just possible** (Ch. 12's three
+  requirements):
+  - *Resume*: `ResumeInFlight` runs at boot — every unfinished saga
+    re-drives its pending step or its compensations. Safe because the
+    `Availability` aggregate is idempotent per (order, beer): a re-driven
+    step whose stock already moved re-emits the fact with the quantity
+    unchanged instead of moving it twice.
+  - *Timeouts*: a watchdog (`SAGA_STEP_TIMEOUT`, default 5m, 0 disables)
+    fails the pending step of any saga with no recorded activity past the
+    cutoff, triggering the normal compensation path; stuck compensations
+    are re-driven, never abandoned.
+  - *Dead letters*: the service bus retries failing handlers with backoff
+    and then parks the message on the `brewup.dead_letter` topic (logged
+    with the failure reason) — poison messages are never lost and never
+    block the bus.
 - A process manager (central, stateful workflow control) remains
   deliberately out: the book reserves it for branching workflows, which
   this linear compensable sequence is not.

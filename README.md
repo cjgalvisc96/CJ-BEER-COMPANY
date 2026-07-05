@@ -15,7 +15,10 @@ with CQRS and event sourcing**.
   empty runs in memory (dev/tests), a Postgres URL makes everything durable
   (production — the compose stack does this, and state survives restarts).
 - **Events over calls** — modules collaborate through integration events on a
-  service bus (Watermill). A sales order crossing to the warehouse:
+  service bus (Watermill). The wire is pluggable: in-process by default,
+  **RabbitMQ with durable queues** when `BROKER_URL` is set (the compose
+  stack does — messages survive restarts, replicas compete for work).
+  A sales order crossing to the warehouse:
 
   ```
   Sales                          Warehouses
@@ -28,6 +31,9 @@ with CQRS and event sourcing**.
   event-sourced saga (`OrderAllocationSaga-<orderId>` stream): a shortage is
   the book's `QuantityNotFound` event, previously allocated rows are given
   back (backward recovery), every message is idempotent under redelivery.
+- **Durable execution** — in-flight sagas resume at boot, a watchdog times
+  out stalled steps (`SAGA_STEP_TIMEOUT`), and poison messages are retried
+  then parked on a dead-letter topic instead of being lost.
 - **Facades are the only public surface** — the REST layer (Gin) talks to
   `sales.Facade` / `warehouses.Facade`, never to module internals.
 - **`internal/muflone`** — a small Go homage to the authors'
@@ -74,7 +80,8 @@ docker run -p 8080:8080 cj-beer-company
 ```
 
 Configuration via environment (see `.env.example`): `HTTP_ADDR`, `LOG_LEVEL`,
-`GIN_MODE`.
+`GIN_MODE`, `DB_URL` (empty = in-memory, Postgres URL = durable), `BROKER_URL`
+(empty = in-process bus, AMQP URL = RabbitMQ), `SAGA_STEP_TIMEOUT`.
 
 ## Using the app
 
