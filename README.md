@@ -36,6 +36,12 @@ with CQRS and event sourcing**.
   then parked on a dead-letter topic instead of being lost.
 - **Facades are the only public surface** — the REST layer (Gin) talks to
   `sales.Facade` / `warehouses.Facade`, never to module internals.
+- **Authentication & RBAC (Keycloak)** — with `AUTH_ISSUER` set (compose does),
+  every `/v1` route requires an OIDC bearer token, and roles gate the writes:
+  `viewer` reads, `sales-manager` places orders, `warehouse-operator` declares
+  production. SSO comes from the IdP; the realm (roles, test users
+  `manager`/`operator`/`barfly`, password `brewup`) is imported from
+  `docker/keycloak/realm.json` at boot. Empty `AUTH_ISSUER` = open API (dev).
 - **`internal/muflone`** — a small Go homage to the authors'
   [Muflone](https://github.com/CQRS-Muflone/Muflone) library: commands/events
   with `aggregateId` + `commitId`, `AggregateRoot` (RaiseEvent/Apply),
@@ -65,7 +71,7 @@ task test                       # all tests
 task --list                     # everything else
 ```
 
-**3. Docker Compose** (full stack: Postgres → Atlas migrations → API → demo data):
+**3. Docker Compose** (full stack: Postgres + RabbitMQ + Keycloak → Atlas migrations → API → demo data):
 
 ```bash
 task docker:up                  # or: docker compose up --build -d
@@ -81,30 +87,39 @@ docker run -p 8080:8080 cj-beer-company
 
 Configuration via environment (see `.env.example`): `HTTP_ADDR`, `LOG_LEVEL`,
 `GIN_MODE`, `DB_URL` (empty = in-memory, Postgres URL = durable), `BROKER_URL`
-(empty = in-process bus, AMQP URL = RabbitMQ), `SAGA_STEP_TIMEOUT`.
+(empty = in-process bus, AMQP URL = RabbitMQ), `AUTH_ISSUER`/`AUTH_JWKS_URL`/
+`AUTH_CLIENT_ID` (empty issuer = open API, OIDC issuer = tokens + RBAC),
+`SAGA_STEP_TIMEOUT`.
 
 ## Using the app
 
-Produce beer, sell it, watch the stock move:
+Produce beer, sell it, watch the stock move. In compose mode, grab a token
+first (skip this and the `-H` headers when running without auth):
 
 ```bash
+token() { curl -s localhost:8180/realms/brewup/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=brewup-api \
+  -d username=$1 -d password=brewup | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])'; }
+OPERATOR=$(token operator); MANAGER=$(token manager)
+
 BEER=11111111-1111-1111-1111-111111111111
 
-# 1. A production order fills the warehouse
-curl localhost:8080/v1/warehouses/availability -d '{
+# 1. A production order fills the warehouse (warehouse-operator role)
+curl localhost:8080/v1/warehouses/availability -H "Authorization: Bearer $OPERATOR" -d '{
   "beer_id":"'$BEER'", "beer_name":"BrewUp IPA",
   "quantity":{"value":100,"unit_of_measure":"Lt"}}'
 
-# 2. A customer places a sales order
-curl localhost:8080/v1/sales -d '{
+# 2. A customer places a sales order (sales-manager role)
+curl localhost:8080/v1/sales -H "Authorization: Bearer $MANAGER" -d '{
   "sales_order_number":"20260705-0001", "customer_name":"Muflone",
   "rows":[{"beer_id":"'$BEER'","beer_name":"BrewUp IPA",
            "quantity":{"value":30,"unit_of_measure":"Lt"},
            "price":{"value":5,"currency":"EUR"}}]}'
 
-# 3. Read models (eventually consistent — writes return immediately)
-curl localhost:8080/v1/sales                          # projected orders
-curl localhost:8080/v1/warehouses/availability        # 70 Lt remaining
+# 3. Read models (any authenticated viewer; eventually consistent)
+curl localhost:8080/v1/sales -H "Authorization: Bearer $MANAGER"
+curl localhost:8080/v1/warehouses/availability -H "Authorization: Bearer $OPERATOR"
+
 ```
 
 ### API
@@ -115,7 +130,11 @@ curl localhost:8080/v1/warehouses/availability        # 70 Lt remaining
 | `GET /v1/sales` · `GET /v1/sales/:id` | Query order projections |
 | `POST /v1/warehouses/availability` | Declare a finished production order |
 | `GET /v1/warehouses/availability[/:beerId]` | Query stock projections |
-| `GET /healthz` · `GET /readyz` | Liveness · readiness (checks the database in durable mode) |
+| `GET /healthz` · `GET /readyz` | Liveness · readiness (open, no token needed) |
+
+RBAC: `POST /v1/sales` needs `sales-manager`; `POST /v1/warehouses/availability`
+needs `warehouse-operator`; `GET`s need `viewer`. Keycloak admin console:
+http://localhost:8180 (admin/admin).
 
 ## Development
 
@@ -128,5 +147,6 @@ task migrate:apply        # Atlas migrations (see migrations/)
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same gate on every push/PR, plus
-vulnerability scanning, migration verification against Postgres, a compose
-smoke test, and the image build/scan/publish to GHCR.
+vulnerability scanning (govulncheck + Trivy, scan-only), migration
+verification against Postgres, and a compose smoke test that builds and
+boots the production image.

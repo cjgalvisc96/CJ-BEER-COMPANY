@@ -57,13 +57,22 @@ func newRouter(t *testing.T, ready rest.ReadinessCheck) http.Handler {
 		sales.NewFacade(bus, salesservices.NewSalesOrderService()),
 		warehouses.NewFacade(bus, warehousesservices.NewAvailabilityService()),
 		ready,
+		nil, // auth disabled
 	)
 }
 
 func do(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return doWithHeaders(t, handler, method, path, body, nil)
+}
+
+func doWithHeaders(t *testing.T, handler http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	return recorder
@@ -115,6 +124,7 @@ func TestReadModelFailuresReturn500(t *testing.T) {
 		sales.NewFacade(bus, &failingSalesQueries{err: storeErr}),
 		warehouses.NewFacade(bus, &failingAvailabilityQueries{err: storeErr}),
 		nil,
+		nil, // auth disabled
 	)
 
 	assert.Equal(t, http.StatusInternalServerError,

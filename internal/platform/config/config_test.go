@@ -27,6 +27,26 @@ func TestBrokerURLFromEnvironment(t *testing.T) {
 	assert.Equal(t, "amqp://guest:guest@localhost:5672/", config.Load().BrokerURL)
 }
 
+func TestAuthConfig(t *testing.T) {
+	t.Setenv("AUTH_ISSUER", "")
+	t.Setenv("AUTH_JWKS_URL", "")
+	cfg := config.Load()
+	assert.Empty(t, cfg.AuthIssuer, "auth disabled by default")
+	assert.Empty(t, cfg.AuthJWKSURL, "no JWKS derived while disabled")
+	assert.Equal(t, "brewup-api", cfg.AuthClientID)
+
+	t.Setenv("AUTH_ISSUER", "http://localhost:8180/realms/brewup")
+	cfg = config.Load()
+	assert.Equal(t, "http://localhost:8180/realms/brewup/protocol/openid-connect/certs",
+		cfg.AuthJWKSURL, "JWKS defaults to the Keycloak convention under the issuer")
+
+	t.Setenv("AUTH_JWKS_URL", "http://keycloak:8080/realms/brewup/protocol/openid-connect/certs")
+	t.Setenv("AUTH_CLIENT_ID", "other-client")
+	cfg = config.Load()
+	assert.Equal(t, "http://keycloak:8080/realms/brewup/protocol/openid-connect/certs", cfg.AuthJWKSURL)
+	assert.Equal(t, "other-client", cfg.AuthClientID)
+}
+
 func TestSagaStepTimeoutParsing(t *testing.T) {
 	t.Setenv("SAGA_STEP_TIMEOUT", "90s")
 	assert.Equal(t, 90*time.Second, config.Load().SagaStepTimeout)

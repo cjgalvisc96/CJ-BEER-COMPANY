@@ -24,12 +24,15 @@ type ReadinessCheck func(ctx context.Context) error
 
 // NewRouter maps the endpoints: /v1/sales and /v1/warehouses, mirroring
 // the book's MapSalesEndpoints / MapWarehousesEndpoints, plus the
-// liveness and readiness probes.
+// liveness and readiness probes. A non-nil verifier turns on
+// authentication (OIDC bearer tokens) and RBAC on every /v1 route; the
+// probes stay open.
 func NewRouter(
 	logger *slog.Logger,
 	salesFacade *sales.Facade,
 	warehousesFacade *warehouses.Facade,
 	ready ReadinessCheck,
+	verifier TokenVerifier,
 ) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery(), requestLogger(logger))
@@ -48,10 +51,12 @@ func NewRouter(
 	})
 
 	v1 := engine.Group("/v1")
+	v1.Use(authenticate(verifier))
+	viewer := requireRole(verifier, RoleViewer)
 
 	salesRoutes := v1.Group("/sales")
 	{
-		salesRoutes.POST("", func(c *gin.Context) {
+		salesRoutes.POST("", requireRole(verifier, RoleSalesManager), func(c *gin.Context) {
 			var body sales.SalesOrderJson
 			if err := c.ShouldBindJSON(&body); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -68,7 +73,7 @@ func NewRouter(
 			c.Header("Location", "/v1/sales/"+orderId)
 			c.JSON(http.StatusCreated, gin.H{"id": orderId})
 		})
-		salesRoutes.GET("", func(c *gin.Context) {
+		salesRoutes.GET("", viewer, func(c *gin.Context) {
 			orders, err := salesFacade.GetSalesOrders(c.Request.Context())
 			if err != nil {
 				respondError(c, err)
@@ -76,7 +81,7 @@ func NewRouter(
 			}
 			c.JSON(http.StatusOK, orders)
 		})
-		salesRoutes.GET("/:id", func(c *gin.Context) {
+		salesRoutes.GET("/:id", viewer, func(c *gin.Context) {
 			order, err := salesFacade.GetSalesOrder(c.Request.Context(), c.Param("id"))
 			if err != nil {
 				respondError(c, err)
@@ -88,7 +93,7 @@ func NewRouter(
 
 	warehousesRoutes := v1.Group("/warehouses")
 	{
-		warehousesRoutes.POST("/availability", func(c *gin.Context) {
+		warehousesRoutes.POST("/availability", requireRole(verifier, RoleWarehouseOperator), func(c *gin.Context) {
 			var body warehouses.ProductionOrderJson
 			if err := c.ShouldBindJSON(&body); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -101,7 +106,7 @@ func NewRouter(
 			}
 			c.JSON(http.StatusAccepted, gin.H{"beer_id": beerId})
 		})
-		warehousesRoutes.GET("/availability", func(c *gin.Context) {
+		warehousesRoutes.GET("/availability", viewer, func(c *gin.Context) {
 			availabilities, err := warehousesFacade.GetAvailabilities(c.Request.Context())
 			if err != nil {
 				respondError(c, err)
@@ -109,7 +114,7 @@ func NewRouter(
 			}
 			c.JSON(http.StatusOK, availabilities)
 		})
-		warehousesRoutes.GET("/availability/:beerId", func(c *gin.Context) {
+		warehousesRoutes.GET("/availability/:beerId", viewer, func(c *gin.Context) {
 			availability, err := warehousesFacade.GetAvailability(c.Request.Context(), c.Param("beerId"))
 			if err != nil {
 				respondError(c, err)

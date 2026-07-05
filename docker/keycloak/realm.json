@@ -1,0 +1,110 @@
+{
+  "realm": "brewup",
+  "enabled": true,
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "viewer",
+        "description": "May read every projection"
+      },
+      {
+        "name": "sales-manager",
+        "description": "May place sales orders"
+      },
+      {
+        "name": "warehouse-operator",
+        "description": "May declare production orders"
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "manager",
+      "enabled": true,
+      "email": "manager@cj-beer.local",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "brewup",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "viewer",
+        "sales-manager"
+      ],
+      "firstName": "Sales",
+      "lastName": "Manager",
+      "requiredActions": []
+    },
+    {
+      "username": "operator",
+      "enabled": true,
+      "email": "operator@cj-beer.local",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "brewup",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "viewer",
+        "warehouse-operator"
+      ],
+      "firstName": "Warehouse",
+      "lastName": "Operator",
+      "requiredActions": []
+    },
+    {
+      "username": "barfly",
+      "enabled": true,
+      "email": "barfly@cj-beer.local",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "brewup",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "viewer"
+      ],
+      "firstName": "Bar",
+      "lastName": "Fly",
+      "requiredActions": []
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "brewup-api",
+      "name": "CJ Beer Company API",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": [
+        "http://localhost:8080/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8080"
+      ],
+      "protocolMappers": [
+        {
+          "name": "brewup-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "brewup-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ]
+}

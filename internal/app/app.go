@@ -15,6 +15,7 @@ import (
 	"github.com/samber/do/v2"
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
+	"github.com/cjgalvisc96/cj-beer-company/internal/platform/auth"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/config"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/database"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/logging"
@@ -74,11 +75,22 @@ func New(cfg config.Config) (*App, error) {
 	sales.Register(injector, bus)
 	warehouses.Register(injector, bus)
 
+	// Auth mode: OIDC bearer tokens + RBAC when an issuer is configured
+	// (Keycloak in the compose stack); open API otherwise (dev, tests).
+	var verifier rest.TokenVerifier
+	if cfg.AuthIssuer != "" {
+		verifier = auth.NewOIDCVerifier(context.Background(), cfg.AuthIssuer, cfg.AuthJWKSURL, cfg.AuthClientID)
+		logger.Info("auth.oidc", slog.String("issuer", cfg.AuthIssuer))
+	} else {
+		logger.Warn("auth.disabled")
+	}
+
 	engine := rest.NewRouter(
 		logger,
 		do.MustInvoke[*sales.Facade](injector),
 		do.MustInvoke[*warehouses.Facade](injector),
 		ready,
+		verifier,
 	)
 
 	return &App{Injector: injector, cfg: cfg, logger: logger, bus: bus, engine: engine}, nil

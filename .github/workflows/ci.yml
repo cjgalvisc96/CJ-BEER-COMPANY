@@ -1,15 +1,15 @@
 # CI — the book's Chapter 9 (DDD Patterns for Continuous Integration)
 # applied end to end. The pipeline is the same gate developers run locally
 # (task lint / test:race / cover), extended with static analysis,
-# vulnerability scanning, migration verification against a real Postgres,
-# a full compose smoke test of the event choreography, and the production
-# image (built, scanned, and pushed to GHCR outside pull requests).
+# vulnerability scanning (govulncheck + Trivy, scan-only — no image is
+# published from CI), migration verification against a real Postgres, and
+# a full compose smoke test that also builds and boots the production
+# image (postgres + rabbitmq + api + seed).
 name: CI
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -19,9 +19,6 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
-env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/cj-beer-company
 
 jobs:
   lint:
@@ -107,10 +104,10 @@ jobs:
           name: coverage
           path: coverage.out
 
-  vulnerabilities:
-    name: govulncheck
+  security:
+    name: Vulnerability scan (scan-only, no image publish)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -119,8 +116,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Scan for vulnerabilities reachable from our code
+      - name: govulncheck — vulnerabilities reachable from our code
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      # Trivy scans the repo (lockfile CVEs + leaked secrets) directly —
+      # no docker build, no registry, no publish.
+      - name: Trivy — dependency CVEs and secrets
+        run: |
+          docker run --rm -v "$PWD:/repo" aquasec/trivy fs \
+            --scanners vuln,secret \
+            --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 /repo
 
   migrations:
     name: Migrations (Atlas) against Postgres
@@ -179,25 +185,42 @@ jobs:
           done
           echo "API never became healthy" && exit 1
 
-      - name: Exercise the choreography (production → order → allocation)
+      - name: Exercise the choreography (auth → production → order → allocation)
         run: |
           set -euo pipefail
           BEER=99999999-9999-9999-9999-999999999999
 
+          token() { # password grant against the imported brewup realm
+            curl -sf localhost:8180/realms/brewup/protocol/openid-connect/token \
+              -d grant_type=password -d client_id=brewup-api \
+              -d "username=$1" -d password=brewup | jq -r .access_token
+          }
+          OPERATOR=$(token operator); MANAGER=$(token manager); BARFLY=$(token barfly)
+
+          # Authentication and RBAC bite before anything else.
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/v1/sales)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/v1/warehouses/availability \
+            -H "Authorization: Bearer $BARFLY" -H 'Content-Type: application/json' \
+            -d '{"beer_id":"x","beer_name":"y","quantity":{"value":1,"unit_of_measure":"Lt"}}')" = "403"
+          echo "auth OK: 401 without token, 403 without the role"
+
           curl -sf localhost:8080/v1/warehouses/availability \
-            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer $OPERATOR" -H 'Content-Type: application/json' \
             -d "{\"beer_id\":\"$BEER\",\"beer_name\":\"CI Pale Ale\",\"quantity\":{\"value\":100,\"unit_of_measure\":\"Lt\"}}"
           sleep 2
-          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" | jq -r .quantity.value)" = "100"
+          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" \
+            -H "Authorization: Bearer $BARFLY" | jq -r .quantity.value)" = "100"
 
           ORDER=$(curl -sf localhost:8080/v1/sales \
-            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer $MANAGER" -H 'Content-Type: application/json' \
             -d "{\"sales_order_number\":\"ci-0001\",\"customer_name\":\"CI Bot\",\"rows\":[{\"beer_id\":\"$BEER\",\"beer_name\":\"CI Pale Ale\",\"quantity\":{\"value\":30,\"unit_of_measure\":\"Lt\"},\"price\":{\"value\":5,\"currency\":\"EUR\"}}]}" \
             | jq -r .id)
           sleep 2
 
-          test "$(curl -sf "localhost:8080/v1/sales/$ORDER" | jq -r .sales_order_number)" = "ci-0001"
-          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" | jq -r .quantity.value)" = "70"
+          test "$(curl -sf "localhost:8080/v1/sales/$ORDER" \
+            -H "Authorization: Bearer $BARFLY" | jq -r .sales_order_number)" = "ci-0001"
+          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" \
+            -H "Authorization: Bearer $BARFLY" | jq -r .quantity.value)" = "70"
           echo "choreography OK: 100 Lt produced, 30 Lt allocated, 70 Lt left"
 
           # Production readiness: the event store and projections live in
@@ -208,8 +231,10 @@ jobs:
             curl -sf localhost:8080/healthz >/dev/null && break
             sleep 1
           done
-          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" | jq -r .quantity.value)" = "70"
-          test "$(curl -sf "localhost:8080/v1/sales/$ORDER" | jq -r .sales_order_number)" = "ci-0001"
+          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" \
+            -H "Authorization: Bearer $BARFLY" | jq -r .quantity.value)" = "70"
+          test "$(curl -sf "localhost:8080/v1/sales/$ORDER" \
+            -H "Authorization: Bearer $BARFLY" | jq -r .sales_order_number)" = "ci-0001"
           echo "durability OK: state survived the API restart"
 
       - name: Dump logs on failure
@@ -220,63 +245,3 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  image:
-    name: Build, scan & publish image
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [lint, architecture, test, vulnerabilities, migrations, e2e-smoke]
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Image metadata (tags & labels)
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          load: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Scan image (Trivy — fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.36.0
-        with:
-          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
-          format: table
-          exit-code: "1"
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push image
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha

@@ -28,6 +28,31 @@ services:
       timeout: 5s
       retries: 15
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    container_name: cjbeer-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Force the issuer to the host-visible URL so tokens fetched from
+      # the host and from inside the network carry the same `iss`.
+      KC_HOSTNAME: http://localhost:8180
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # The health endpoint lives on the management port (9000); the image
+      # has no curl, so poke it over /dev/tcp.
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
   migrate:
     image: arigaio/atlas
     container_name: cjbeer-migrate
@@ -57,12 +82,20 @@ services:
       # Broker mode: RabbitMQ carries the messages (durable queues), so
       # in-flight work survives restarts too.
       BROKER_URL: amqp://guest:guest@rabbitmq:5672/
+      # Auth mode: OIDC bearer tokens + RBAC against Keycloak. The issuer
+      # is the host-visible URL (matches the tokens' `iss`); the JWKS keys
+      # are fetched over the container network.
+      AUTH_ISSUER: http://localhost:8180/realms/brewup
+      AUTH_JWKS_URL: http://keycloak:8080/realms/brewup/protocol/openid-connect/certs
+      AUTH_CLIENT_ID: brewup-api
     ports:
       - "8080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
       rabbitmq:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
 
   seed:
@@ -71,6 +104,7 @@ services:
     entrypoint: ["/bin/sh", "/seed/seed.sh"]
     environment:
       API_URL: http://api:8080
+      KEYCLOAK_URL: http://keycloak:8080
     volumes:
       - ./docker/mock-data:/seed:ro
     depends_on:
