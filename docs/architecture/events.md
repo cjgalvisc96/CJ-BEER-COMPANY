@@ -1,45 +1,41 @@
-# Event Catalog
+# Message Catalog
 
-Topics are the public contract between contexts. Consumers deserialize their
-own local structs (consumer-driven contracts) — they never import the
-producer's types.
+Commands use the producer-consumer pattern (exactly one handler); events
+use pub/sub. Topics: `commands.<name>`, `events.<name>`,
+`integrationevents.<name>`.
 
-## Domain events
+## Commands (imperative)
 
-| Topic | Producer | Consumers | Payload (beyond `occurred_at`) |
-|---|---|---|---|
-| `catalog.beer_created` | catalog | — (observability) | `beer_id`, `name`, `style` |
-| `catalog.beer_price_changed` | catalog | — | `beer_id`, `old_price_cents`, `new_price_cents`, `currency` |
-| `catalog.beer_retired` | catalog | — | `beer_id`, `name` |
-| `brewing.batch_started` | brewing | — | `batch_id`, `beer_id`, `units` |
-| `brewing.batch_completed` | brewing | **inventory** (replenishes stock) | `batch_id`, `beer_id`, `units` |
-| `inventory.stock_replenished` | inventory | — | `beer_id`, `units`, `quantity` |
-| `inventory.stock_reserved` | inventory | — | `beer_id`, `units`, `quantity` |
-| `inventory.stock_level_low` | inventory | — (alerting hook) | `beer_id`, `quantity`, `reorder_level` |
-| `orders.order_placed` | orders | **inventory** (reserves stock) | `order_id`, `customer_name`, `lines[]{beer_id,units}`, `total_cents`, `currency` |
-| `orders.order_confirmed` | orders | — | `order_id` |
-| `orders.order_rejected` | orders | — | `order_id`, `reason` |
-| `orders.order_cancelled` | orders | — | `order_id` |
+| Command | Module | Effect |
+|---|---|---|
+| `sales.create_sales_order` | sales | Create a SalesOrder (aggregateId = SalesOrderId) |
+| `warehouses.update_availability_due_to_production_order` | warehouses | Add produced quantity to a beer's availability |
+| `warehouses.update_availability_due_to_sales_order` | warehouses | Allocate ordered quantity from a beer's availability |
 
-## Integration events (process outcomes, not aggregate facts)
+## Domain events (past tense, stay inside their module)
 
-| Topic | Producer | Consumers | Payload |
-|---|---|---|---|
-| `inventory.order_stock_reserved` | inventory | **orders** (confirms order) | `order_id` |
-| `inventory.order_stock_rejected` | inventory | **orders** (rejects order) | `order_id`, `reason` |
+| Event | Raised by | Consumed by (same module) |
+|---|---|---|
+| `sales.sales_order_created` | SalesOrder aggregate | read-model projection; integration publisher |
+| `warehouses.availability_updated_due_to_production_order` | Availability aggregate | availability projection (quantity = new total) |
+| `warehouses.beer_availability_updated` | Availability aggregate | availability projection (quantity = remaining); integration publisher |
 
-## The order-fulfilment choreography
+## Integration events (cross-context, consumer-driven contracts)
+
+| Event | Producer | Consumers |
+|---|---|---|
+| `sales.sales_order_created` | sales | **warehouses**: one `UpdateAvailabilityDueToSalesOrder` per row |
+| `warehouses.beer_availability_updated` | warehouses | **sales**: notified that stock was allocated |
+
+## The flow (the book's Figure 4.2, implemented part)
 
 ```
-orders                          inventory
-  │ orders.order_placed ───────────▶ verify all lines, then reserve
-  │                                  │
-  │ ◀── inventory.order_stock_reserved (all lines held)
-  │     → Order.Confirm()
-  │ ◀── inventory.order_stock_rejected (any line short / untracked)
-  │     → Order.Reject(reason)
+Sales                     Warehouses                    (Payment)   (Shipping)
+  │ SalesOrderCreated ───────▶ allocate stock per row       future      future
+  │                           │ BeerAvailabilityUpdated
+  │ ◀──────────────────────────┘ (remaining quantity)
 ```
 
-Race note: an order can be cancelled by the customer while the reservation
-is in flight. The orders event handlers treat `ErrOrderNotPending` as an
-expected outcome (logged, acked) — not a processing failure.
+Allocation beyond availability is a business refusal: the warehouse logs
+`warehouses.allocation_refused`, commits nothing, and acks the message
+(it is not a poison message).

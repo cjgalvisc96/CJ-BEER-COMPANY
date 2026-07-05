@@ -1,28 +1,25 @@
-# ADR-0003: In-memory repositories first, Postgres schema versioned from day one
+# ADR-0003: In-memory persistence first, target schema versioned from day one
 
-- **Status**: accepted
+- **Status**: accepted (write model superseded by ADR-0005's event store)
 - **Date**: 2026-07-05
 
 ## Context
 
-The domain model and context boundaries carry the project's risk; a database
-adds operational weight without validating them. But deferring all
-persistence thinking tends to leak "whatever the ORM produced" into the
-domain.
+The domain model and module boundaries carry the project's risk; a
+database adds operational weight without validating them.
 
 ## Decision
 
-Ship snapshot-based, race-safe in-memory adapters behind the domain-owned
-repository ports, **and** version the target Postgres schema in
-`migrations/` (Atlas) from the start, so the persistence contract is
-designed deliberately rather than emerging by accident. The compose stack
-already brings up Postgres + migrations to keep the path exercised.
+Run everything in memory — the event store (`muflone.InMemoryEventStore`)
+and the read-model services — while versioning the target Postgres schema
+in `migrations/` (Atlas) from the start: an `events` table for the streams
+and projection tables for the read models. The compose stack already
+brings up Postgres + migrations so the path stays exercised.
 
 ## Consequences
 
 - `task run` and the whole test suite need zero external services.
-- Data does not survive a restart — fine for the current stage, and the
-  seeder (`docker/mock-data/seed.sh`) repopulates demo data.
-- Adding the real adapter = one file per context in
-  `infrastructure/persistence` + an outbox decision (future ADR); no domain
-  or application changes.
+- Data does not survive a restart; the seeder repopulates demo data.
+- Going durable = implementing `muflone.EventStore` over Postgres/
+  EventStoreDB and pointing the read-model services at the projection
+  tables; no domain, handler, or facade changes.

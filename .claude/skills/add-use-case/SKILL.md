@@ -1,31 +1,36 @@
 ---
 name: add-use-case
-description: Add a command or query use case to an existing bounded context.
+description: Add a command (write) or query (read) to an existing module, BrewUp-style.
 ---
 
-# Add a use case (command or query)
+# Add a use case
 
-1. **Decide command vs query.** Commands mutate one aggregate and may
-   publish events; queries only read. Never both.
-2. **Domain gap?** If the behavior doesn't exist yet, add a method on the
-   aggregate that enforces the invariant and records the event; unit-test it
-   before touching the application layer.
-3. **Handler file** — `internal/<ctx>/application/commands/<verb>_<noun>.go`:
+## Command (write side)
 
-   ```go
-   type VerbNounInput struct { ... }            // primitives only
-   type VerbNounHandler struct { ... }          // deps: repo, ports, publisher
-   func NewVerbNounHandler(...) *VerbNounHandler
-   func (h *VerbNounHandler) Handle(ctx context.Context, in VerbNounInput) (dto.XxxOutput, error)
-   ```
+1. **Command** in `sharedkernel/commands/`: struct embedding
+   `muflone.CommandBase`, imperative `MessageName()`
+   (`"<module>.<verb_noun>"`), `New*` constructor taking the typed
+   aggregate id + `commitId uuid.UUID`.
+2. **Domain event(s)** in `sharedkernel/events/`: past tense, embedding
+   `muflone.DomainEventBase`; carry the resulting state (the book's
+   availability events carry the NEW cumulative quantity).
+3. **Aggregate method** in `domain/`: validate the invariant, then
+   `RaiseEvent(...)`. Add the event to the `Route` type-switch and write
+   its apply method — state is assigned only there.
+4. **Command handler** in `domain/commandhandlers/`: load (or create) the
+   aggregate, call the method, `Save(ctx, aggregate, uuid.New())`.
+   Register it in `module.go` with `muflone.RegisterCommandHandler`.
+5. **Projection**: extend/add a read-model event handler + dto/service,
+   register with `muflone.RegisterDomainEventHandler`.
+6. **Integration**: if other contexts must react, add a SEPARATE type in
+   `sharedkernel/integrationevents/` and a publisher handler in
+   `module.go` — never publish the domain event outward.
+7. **Specification test** (Given/When/OnHandler/Expect) — including the
+   refusal path (`ExpectedError` or ack-with-nothing-committed).
+8. Facade + endpoint if user-facing; e2e test if it joins a flow.
 
-   Command body order: parse/validate inputs → load or create aggregate →
-   call domain method → `repository.Save` → `publisher.Publish(agg.PullEvents()...)`
-   → return DTO. Return domain errors as-is (no HTTP awareness).
-4. **Wire** it in the context's `module.go` (`do.Provide`).
-5. **Expose** it: method on the context's handler struct in
-   `internal/presentation/http/`, route in `router.go`, request struct with
-   `binding` tags, errors via `respondError`.
-6. **Test**: domain test for any new invariant; handler test with fakes if
-   the use case orchestrates ports; e2e scenario if it emits/consumes
-   events. Finish with the quality-gate command.
+## Query (read side)
+
+Add the method to the module's read-model service + facade, expose it in
+`internal/rest`. Queries never touch the event store or the aggregate —
+read models only.

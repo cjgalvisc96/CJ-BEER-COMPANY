@@ -1,31 +1,30 @@
 # Architecture Rules (non-negotiable)
 
-1. **Layer direction** — inside a context: `domain` imports only
-   `internal/shared/domain`; `application` imports its own domain (+ shared
-   ports); `infrastructure` implements ports. Nothing imports
-   `infrastructure` except the context's `module.go`.
-2. **Context isolation** — a context may import another context **only**
-   from `infrastructure/acl`, and only the other context's `application`
-   layer. Domain types never cross context boundaries; use opaque
-   `BeerRef`-style IDs.
-3. **Events are the public contract** — cross-context reactions subscribe to
-   topic strings and unmarshal local consumer-driven structs. Never import a
-   producer's event types into a consumer.
-4. **Events after persistence** — command handlers publish
-   `aggregate.PullEvents()` only after a successful `repository.Save`.
-5. **Behavior on aggregates** — business rules live in domain methods
-   (`Order.Confirm()`, `StockItem.Reserve()`), not in services or handlers.
-   No anemic models. Constructors/`Parse*` reject invalid values; there is
-   no way to hold an invalid value object.
-6. **Presentation is thin** — Gin handlers bind → call one command/query
-   handler → map errors via `respondError`. No business logic, no domain
-   imports.
-7. **Errors** — construct via `shared` error kinds
-   (`NewValidationError`, `NewNotFoundError`, `NewConflictError`,
-   `NewUnprocessableError`); wrap with `fmt.Errorf("%w: context")`. HTTP
-   mapping happens only in `presentation/http/respond.go`.
-8. **Schema mirrors the model** — migrations (Atlas, `migrations/`) carry no
-   cross-context foreign keys (ADR-0004). New tables for a context go in a
-   new versioned migration; run `task migrate:hash` after edits.
-9. **Everything under `internal/`** — never create importable public
-   packages without an explicit decision (ADR).
+This repo is the Go rendition of the book's BrewUp application (modular
+monolith + CQRS + event sourcing). Keep it that way.
+
+1. **Module isolation** — `internal/sales` and `internal/warehouses` never
+   import each other (fitness test enforced). Cross-module communication
+   is integration events on the service bus; consumers own their contract
+   structs.
+2. **Module shape** — every module keeps the BrewUp split:
+   `sharedkernel/` (customtypes, commands, events, integrationevents),
+   `domain/` (event-sourced aggregate + commandhandlers), `readmodel/`
+   (dtos, eventhandlers, services), `facade.go`, `module.go`.
+3. **Event sourcing is the only write path** — aggregates change state
+   exclusively via `RaiseEvent` + apply methods; no setters, no direct
+   field writes outside apply. Repositories are `muflone.Repository`
+   (GetByID/Save) — the write model runs no queries.
+4. **Commands vs events** — commands imperative (`CreateSalesOrder`), one
+   handler, producer-consumer; events past tense (`SalesOrderCreated`),
+   pub/sub. Both carry `aggregateId` + `commitId`.
+5. **Domain events stay home; integration events are separate types** even
+   when the shape matches — never publish a domain event across contexts.
+6. **REST depends only on facades** (fitness test enforced). No business
+   logic in endpoints; facades build commands and query read models.
+7. **muflone stays generic** — it must never import a business module.
+8. **Reads are eventually consistent** — writes return the pre-generated
+   aggregate id; callers poll projections. Never make a command handler
+   feed a response synchronously.
+9. **Migrations** (Atlas, `migrations/`): event store + projection tables,
+   no FKs across modules; new versioned migration + `task migrate:hash`.

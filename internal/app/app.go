@@ -1,6 +1,6 @@
-// Package app is the composition root: it builds the DI container, wires
-// every bounded context, subscribes event handlers to the bus, and runs the
-// HTTP server and message router with graceful shutdown.
+// Package app is the composition root: it builds the DI container, the
+// service bus, wires the Sales and Warehouses modules, and runs the HTTP
+// server and the bus with graceful shutdown.
 package app
 
 import (
@@ -14,23 +14,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/samber/do/v2"
 
-	"github.com/cjgalvisc96/cj-beer-company/internal/brewing"
-	brewingcommands "github.com/cjgalvisc96/cj-beer-company/internal/brewing/application/commands"
-	brewingqueries "github.com/cjgalvisc96/cj-beer-company/internal/brewing/application/queries"
-	"github.com/cjgalvisc96/cj-beer-company/internal/catalog"
-	catalogcommands "github.com/cjgalvisc96/cj-beer-company/internal/catalog/application/commands"
-	catalogqueries "github.com/cjgalvisc96/cj-beer-company/internal/catalog/application/queries"
-	"github.com/cjgalvisc96/cj-beer-company/internal/inventory"
-	inventorycommands "github.com/cjgalvisc96/cj-beer-company/internal/inventory/application/commands"
-	inventoryqueries "github.com/cjgalvisc96/cj-beer-company/internal/inventory/application/queries"
-	"github.com/cjgalvisc96/cj-beer-company/internal/orders"
-	orderscommands "github.com/cjgalvisc96/cj-beer-company/internal/orders/application/commands"
-	ordersqueries "github.com/cjgalvisc96/cj-beer-company/internal/orders/application/queries"
+	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/config"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/logging"
-	httppresentation "github.com/cjgalvisc96/cj-beer-company/internal/presentation/http"
-	"github.com/cjgalvisc96/cj-beer-company/internal/shared/application/ports"
-	"github.com/cjgalvisc96/cj-beer-company/internal/shared/infrastructure/messaging"
+	"github.com/cjgalvisc96/cj-beer-company/internal/rest"
+	"github.com/cjgalvisc96/cj-beer-company/internal/sales"
+	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -39,12 +28,10 @@ type App struct {
 	Injector do.Injector
 	cfg      config.Config
 	logger   *slog.Logger
-	bus      *messaging.Bus
+	bus      *muflone.ServiceBus
 	engine   *gin.Engine
 }
 
-// New wires the whole application. It only fails on wiring errors, so a
-// successful New means the app is ready to Run.
 func New(cfg config.Config) (*App, error) {
 	logger := logging.New(cfg.LogLevel)
 	gin.SetMode(cfg.GinMode)
@@ -53,67 +40,33 @@ func New(cfg config.Config) (*App, error) {
 	do.ProvideValue(injector, cfg)
 	do.ProvideValue(injector, logger)
 
-	bus, err := messaging.NewBus(logger)
+	bus, err := muflone.NewServiceBus(logger)
 	if err != nil {
-		return nil, fmt.Errorf("create message bus: %w", err)
+		return nil, fmt.Errorf("create service bus: %w", err)
 	}
-	do.ProvideValue(injector, bus)
-	do.Provide(injector, func(i do.Injector) (ports.EventPublisher, error) {
-		return messaging.NewWatermillEventPublisher(bus.PubSub), nil
-	})
 
-	// Bounded contexts. Registration order does not matter (providers are
-	// lazy); subscription order is explicit below.
-	catalog.Register(injector)
-	inventory.Register(injector)
-	orders.Register(injector)
-	brewing.Register(injector)
+	sales.Register(injector, bus)
+	warehouses.Register(injector, bus)
 
-	inventory.SubscribeEventHandlers(injector, bus)
-	orders.SubscribeEventHandlers(injector, bus)
-
-	engine := httppresentation.NewRouter(
+	engine := rest.NewRouter(
 		logger,
-		httppresentation.NewBeerHandlers(
-			do.MustInvoke[*catalogcommands.CreateBeerHandler](injector),
-			do.MustInvoke[*catalogcommands.ChangeBeerPriceHandler](injector),
-			do.MustInvoke[*catalogcommands.RetireBeerHandler](injector),
-			do.MustInvoke[*catalogqueries.GetBeerHandler](injector),
-			do.MustInvoke[*catalogqueries.ListBeersHandler](injector),
-		),
-		httppresentation.NewStockHandlers(
-			do.MustInvoke[*inventorycommands.TrackStockItemHandler](injector),
-			do.MustInvoke[*inventorycommands.ReplenishStockHandler](injector),
-			do.MustInvoke[*inventoryqueries.GetStockHandler](injector),
-			do.MustInvoke[*inventoryqueries.ListStockHandler](injector),
-		),
-		httppresentation.NewOrderHandlers(
-			do.MustInvoke[*orderscommands.PlaceOrderHandler](injector),
-			do.MustInvoke[*orderscommands.CancelOrderHandler](injector),
-			do.MustInvoke[*ordersqueries.GetOrderHandler](injector),
-			do.MustInvoke[*ordersqueries.ListOrdersHandler](injector),
-		),
-		httppresentation.NewBatchHandlers(
-			do.MustInvoke[*brewingcommands.StartBatchHandler](injector),
-			do.MustInvoke[*brewingcommands.CompleteBatchHandler](injector),
-			do.MustInvoke[*brewingqueries.GetBatchHandler](injector),
-			do.MustInvoke[*brewingqueries.ListBatchesHandler](injector),
-		),
+		do.MustInvoke[*sales.Facade](injector),
+		do.MustInvoke[*warehouses.Facade](injector),
 	)
 
 	return &App{Injector: injector, cfg: cfg, logger: logger, bus: bus, engine: engine}, nil
 }
 
-// Run blocks until ctx is cancelled, then shuts everything down gracefully.
+// Run blocks until ctx is cancelled, then shuts down gracefully.
 func (a *App) Run(ctx context.Context) error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		if err := a.bus.Router.Run(ctx); err != nil {
-			errCh <- fmt.Errorf("message router: %w", err)
+		if err := a.bus.Run(ctx); err != nil {
+			errCh <- fmt.Errorf("service bus: %w", err)
 		}
 	}()
-	<-a.bus.Router.Running()
+	<-a.bus.Running()
 
 	server := &nethttp.Server{Addr: a.cfg.HTTPAddr, Handler: a.engine}
 	go func() {
@@ -146,14 +99,13 @@ func (a *App) Engine() *gin.Engine {
 	return a.engine
 }
 
-// StartBus runs only the message router (used by end-to-end tests that
-// drive the Engine directly instead of a real listener).
+// StartBus runs only the service bus, for tests that drive Engine directly.
 func (a *App) StartBus(ctx context.Context) error {
 	go func() {
-		_ = a.bus.Router.Run(ctx)
+		_ = a.bus.Run(ctx)
 	}()
 	select {
-	case <-a.bus.Router.Running():
+	case <-a.bus.Running():
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

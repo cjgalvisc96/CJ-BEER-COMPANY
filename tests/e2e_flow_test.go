@@ -1,18 +1,18 @@
-// Package tests contains black-box end-to-end tests: they drive the HTTP
-// API exactly like a client would and assert on the asynchronous outcomes
-// of the event choreography (brewing → inventory → orders).
+// Package tests holds the end-to-end safety net (the book's E2E tests,
+// e.g. Can_Create_SalesOrder): drive the HTTP endpoints like a client and
+// assert on the read models, accounting for eventual consistency.
 package tests
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -37,173 +37,188 @@ func newTestClient(t *testing.T) *testClient {
 	return &testClient{t: t, engine: application.Engine()}
 }
 
-func (c *testClient) do(method, path string, body any) (int, map[string]any) {
+func (c *testClient) do(method, path string, body any) (int, []byte) {
 	c.t.Helper()
-	var reader *strings.Reader
+	reader := strings.NewReader("")
 	if body != nil {
 		raw, err := json.Marshal(body)
 		require.NoError(c.t, err)
 		reader = strings.NewReader(string(raw))
-	} else {
-		reader = strings.NewReader("")
 	}
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	c.engine.ServeHTTP(recorder, req)
-
-	var decoded map[string]any
-	if recorder.Body.Len() > 0 {
-		require.NoError(c.t, json.Unmarshal(recorder.Body.Bytes(), &decoded),
-			"body: %s", recorder.Body.String())
-	}
-	return recorder.Code, decoded
+	return recorder.Code, recorder.Body.Bytes()
 }
 
-func (c *testClient) createBeer(name string) string {
-	c.t.Helper()
-	status, body := c.do(http.MethodPost, "/api/v1/beers", map[string]any{
-		"name":        name,
-		"style":       "ipa",
-		"abv":         6.2,
-		"price_cents": 550,
-		"currency":    "USD",
-	})
-	require.Equal(c.t, http.StatusCreated, status, "body: %v", body)
-	return body["id"].(string)
-}
-
-// brewAndStock runs a full production cycle so the beer has sellable stock.
-func (c *testClient) brewAndStock(beerID string, units int) {
-	c.t.Helper()
-	status, batch := c.do(http.MethodPost, "/api/v1/batches", map[string]any{
-		"beer_id": beerID,
-		"units":   units,
-	})
-	require.Equal(c.t, http.StatusCreated, status, "body: %v", batch)
-	status, _ = c.do(http.MethodPost, "/api/v1/batches/"+batch["id"].(string)+"/complete",
-		map[string]any{"produced_units": units})
-	require.Equal(c.t, http.StatusOK, status)
-}
-
-// eventually polls an assertion until it holds; the choreography is
-// asynchronous, so outcomes take a few milliseconds to settle.
 func (c *testClient) eventually(check func() bool) {
 	c.t.Helper()
 	require.Eventually(c.t, check, 3*time.Second, 10*time.Millisecond)
 }
 
-func (c *testClient) orderStatus(orderID string) string {
-	status, body := c.do(http.MethodGet, "/api/v1/orders/"+orderID, nil)
-	require.Equal(c.t, http.StatusOK, status)
-	return body["status"].(string)
+// produceBeer declares a finished production order and waits for the
+// availability projection.
+func (c *testClient) produceBeer(beerId, beerName string, liters int) {
+	c.t.Helper()
+	status, body := c.do(http.MethodPost, "/v1/warehouses/availability", map[string]any{
+		"beer_id":   beerId,
+		"beer_name": beerName,
+		"quantity":  map[string]any{"value": liters, "unit_of_measure": "Lt"},
+	})
+	require.Equal(c.t, http.StatusAccepted, status, "body: %s", body)
 }
 
-func TestFullHappyPath_BrewStockOrderConfirm(t *testing.T) {
+func (c *testClient) availabilityOf(beerId string) (int, bool) {
+	status, body := c.do(http.MethodGet, "/v1/warehouses/availability/"+beerId, nil)
+	if status != http.StatusOK {
+		return 0, false
+	}
+	var availability struct {
+		Quantity struct {
+			Value int `json:"value"`
+		} `json:"quantity"`
+	}
+	require.NoError(c.t, json.Unmarshal(body, &availability))
+	return availability.Quantity.Value, true
+}
+
+// TestCanCreateSalesOrder is the Go rendition of the book's
+// Can_Create_SalesOrder E2E test: POST /v1/sales returns Created, and the
+// order shows up in the read model.
+func TestCanCreateSalesOrder(t *testing.T) {
 	client := newTestClient(t)
+	beerId := uuid.NewString()
 
-	beerID := client.createBeer("CJ Golden Lager")
-	client.brewAndStock(beerID, 100)
+	status, body := client.do(http.MethodPost, "/v1/sales", map[string]any{
+		"sales_order_number": "20240315-1500",
+		"customer_name":      "Muflone",
+		"customer_id":        uuid.NewString(),
+		"rows": []map[string]any{{
+			"beer_id":   beerId,
+			"beer_name": "BrewUp IPA",
+			"quantity":  map[string]any{"value": 10, "unit_of_measure": "Lt"},
+			"price":     map[string]any{"value": 5, "currency": "EUR"},
+		}},
+	})
+	require.Equal(t, http.StatusCreated, status, "body: %s", body)
 
-	// The BatchCompleted event replenishes inventory asynchronously.
+	var created struct {
+		Id string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(body, &created))
+	require.NotEmpty(t, created.Id)
+
 	client.eventually(func() bool {
-		status, stock := client.do(http.MethodGet, "/api/v1/stock/"+beerID, nil)
-		return status == http.StatusOK && stock["quantity"] == float64(100)
+		status, _ := client.do(http.MethodGet, "/v1/sales/"+created.Id, nil)
+		return status == http.StatusOK
 	})
 
-	status, order := client.do(http.MethodPost, "/api/v1/orders", map[string]any{
-		"customer_name": "Bar La Cerveceria",
-		"lines":         []map[string]any{{"beer_id": beerID, "units": 30}},
-	})
-	require.Equal(t, http.StatusAccepted, status, "body: %v", order)
-	require.Equal(t, "pending", order["status"])
-	assert.Equal(t, float64(30*550), order["total_cents"])
-
-	orderID := order["id"].(string)
-	client.eventually(func() bool { return client.orderStatus(orderID) == "confirmed" })
-
-	// Stock was reserved: 100 brewed - 30 sold.
-	_, stock := client.do(http.MethodGet, "/api/v1/stock/"+beerID, nil)
-	assert.Equal(t, float64(70), stock["quantity"])
+	status, body = client.do(http.MethodGet, "/v1/sales/"+created.Id, nil)
+	require.Equal(t, http.StatusOK, status)
+	var order struct {
+		SalesOrderNumber string `json:"sales_order_number"`
+		CustomerName     string `json:"customer_name"`
+		Rows             []struct {
+			BeerName string `json:"beer_name"`
+		} `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal(body, &order))
+	assert.Equal(t, "20240315-1500", order.SalesOrderNumber)
+	assert.Equal(t, "Muflone", order.CustomerName)
+	require.Len(t, order.Rows, 1)
+	assert.Equal(t, "BrewUp IPA", order.Rows[0].BeerName)
 }
 
-func TestOrderRejectedWhenStockInsufficient(t *testing.T) {
+// TestSalesOrderAllocatesWarehouseStock exercises the book's Figure 4.2
+// flow: production fills availability, SalesOrderCreated crosses to the
+// warehouse as an integration event, stock is allocated, and
+// BeerAvailabilityUpdated leaves the remaining quantity in the read model.
+func TestSalesOrderAllocatesWarehouseStock(t *testing.T) {
 	client := newTestClient(t)
+	beerId := uuid.NewString()
 
-	beerID := client.createBeer("CJ Imperial Stout")
-	client.brewAndStock(beerID, 10)
+	client.produceBeer(beerId, "BrewUp IPA", 100)
 	client.eventually(func() bool {
-		status, stock := client.do(http.MethodGet, "/api/v1/stock/"+beerID, nil)
-		return status == http.StatusOK && stock["quantity"] == float64(10)
+		quantity, ok := client.availabilityOf(beerId)
+		return ok && quantity == 100
 	})
 
-	status, order := client.do(http.MethodPost, "/api/v1/orders", map[string]any{
-		"customer_name": "Thirsty Pub",
-		"lines":         []map[string]any{{"beer_id": beerID, "units": 999}},
+	status, _ := client.do(http.MethodPost, "/v1/sales", map[string]any{
+		"sales_order_number": "20240315-1501",
+		"customer_name":      "Bar La Cerveceria",
+		"rows": []map[string]any{{
+			"beer_id":   beerId,
+			"beer_name": "BrewUp IPA",
+			"quantity":  map[string]any{"value": 30, "unit_of_measure": "Lt"},
+			"price":     map[string]any{"value": 5, "currency": "EUR"},
+		}},
 	})
-	require.Equal(t, http.StatusAccepted, status)
+	require.Equal(t, http.StatusCreated, status)
 
-	orderID := order["id"].(string)
-	client.eventually(func() bool { return client.orderStatus(orderID) == "rejected" })
-
-	// Nothing was reserved on a rejected order.
-	_, stock := client.do(http.MethodGet, "/api/v1/stock/"+beerID, nil)
-	assert.Equal(t, float64(10), stock["quantity"])
+	client.eventually(func() bool {
+		quantity, _ := client.availabilityOf(beerId)
+		return quantity == 70
+	})
 }
 
-func TestPlaceOrderForUnknownBeerFailsSynchronously(t *testing.T) {
+// TestOversizedOrderLeavesAvailabilityUntouched: the warehouse refuses the
+// allocation, availability stays as produced.
+func TestOversizedOrderLeavesAvailabilityUntouched(t *testing.T) {
 	client := newTestClient(t)
+	beerId := uuid.NewString()
 
-	status, body := client.do(http.MethodPost, "/api/v1/orders", map[string]any{
-		"customer_name": "Ghost Bar",
-		"lines": []map[string]any{
-			{"beer_id": "00000000-0000-0000-0000-000000000001", "units": 1},
-		},
+	client.produceBeer(beerId, "BrewUp Stout", 10)
+	client.eventually(func() bool {
+		quantity, ok := client.availabilityOf(beerId)
+		return ok && quantity == 10
 	})
 
-	assert.Equal(t, http.StatusUnprocessableEntity, status, "body: %v", body)
+	status, _ := client.do(http.MethodPost, "/v1/sales", map[string]any{
+		"sales_order_number": "20240315-1502",
+		"customer_name":      "Thirsty Pub",
+		"rows": []map[string]any{{
+			"beer_id":   beerId,
+			"beer_name": "BrewUp Stout",
+			"quantity":  map[string]any{"value": 999, "unit_of_measure": "Lt"},
+			"price":     map[string]any{"value": 6, "currency": "EUR"},
+		}},
+	})
+	require.Equal(t, http.StatusCreated, status, "the order itself is accepted; allocation is refused downstream")
+
+	// Give the choreography time to settle, then confirm nothing changed.
+	time.Sleep(300 * time.Millisecond)
+	quantity, ok := client.availabilityOf(beerId)
+	require.True(t, ok)
+	assert.Equal(t, 10, quantity)
 }
 
-func TestRetiredBeerCannotBeOrderedOrBrewed(t *testing.T) {
+// TestProductionOrdersAccumulate mirrors the cumulative semantics of the
+// book's Example 2: 100 Lt + 100 Lt → 200 Lt.
+func TestProductionOrdersAccumulate(t *testing.T) {
 	client := newTestClient(t)
+	beerId := uuid.NewString()
 
-	beerID := client.createBeer("CJ Seasonal Sour")
-	status, _ := client.do(http.MethodDelete, "/api/v1/beers/"+beerID, nil)
-	require.Equal(t, http.StatusNoContent, status)
-
-	status, _ = client.do(http.MethodPost, "/api/v1/orders", map[string]any{
-		"customer_name": "Bar",
-		"lines":         []map[string]any{{"beer_id": beerID, "units": 1}},
+	client.produceBeer(beerId, "Muflone IPA", 100)
+	client.eventually(func() bool {
+		quantity, ok := client.availabilityOf(beerId)
+		return ok && quantity == 100
 	})
-	assert.Equal(t, http.StatusUnprocessableEntity, status)
 
-	status, _ = client.do(http.MethodPost, "/api/v1/batches", map[string]any{
-		"beer_id": beerID,
-		"units":   10,
+	client.produceBeer(beerId, "Muflone IPA", 100)
+	client.eventually(func() bool {
+		quantity, _ := client.availabilityOf(beerId)
+		return quantity == 200
 	})
-	assert.Equal(t, http.StatusUnprocessableEntity, status)
 }
 
-func TestDuplicateBeerNameConflicts(t *testing.T) {
+func TestInvalidSalesOrderIsRejected(t *testing.T) {
 	client := newTestClient(t)
 
-	client.createBeer("CJ Twin")
-	status, _ := client.do(http.MethodPost, "/api/v1/beers", map[string]any{
-		"name":        "cj twin",
-		"style":       "ale",
-		"abv":         4.0,
-		"price_cents": 300,
-		"currency":    "USD",
+	status, _ := client.do(http.MethodPost, "/v1/sales", map[string]any{
+		"customer_name": "No Number",
+		"rows":          []map[string]any{},
 	})
 
-	assert.Equal(t, http.StatusConflict, status)
-}
-
-func TestHealthEndpoint(t *testing.T) {
-	client := newTestClient(t)
-
-	status, body := client.do(http.MethodGet, "/healthz", nil)
-
-	assert.Equal(t, http.StatusOK, status)
-	assert.Equal(t, "ok", fmt.Sprint(body["status"]))
+	assert.Equal(t, http.StatusBadRequest, status)
 }

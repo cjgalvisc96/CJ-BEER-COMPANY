@@ -15,10 +15,12 @@ start; this directory holds the deeper material.
 
 ## The system in one paragraph
 
-The company sells beers (**catalog**), produces them in batches (**brewing**),
-keeps them in a warehouse (**inventory**), and sells them to customers
-(**orders**). Contexts collaborate only through domain events on a Watermill
-bus: completing a batch replenishes stock; placing an order triggers a stock
-reservation whose outcome confirms or rejects the order. HTTP (Gin) is a thin
-presentation layer over application-level command/query handlers wired by a
-samber/do dependency-injection container.
+The Go rendition of **BrewUp**, the brewery application from
+*Domain-Driven Refactoring*, at the book's end state: a modular monolith
+with **CQRS and event sourcing**. The **Sales** module takes orders
+(`CreateSalesOrder` → `SalesOrderCreated`); the **Warehouses** module
+tracks beer availability (production orders fill it, sales orders allocate
+from it via integration events). Aggregates are event-sourced through a
+Muflone-style framework (`internal/muflone`), reads are eventually
+consistent projections, Gin maps the `/v1/sales` and `/v1/warehouses`
+endpoints through module facades, and samber/do wires it together.

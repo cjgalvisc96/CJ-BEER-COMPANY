@@ -1,68 +1,56 @@
--- Baseline schema for CJ Beer Company: one table set per bounded context.
+-- Baseline schema for CJ Beer Company (BrewUp-style CQRS + Event Sourcing).
 --
--- Deliberate design choices (mirroring the modular-monolith boundaries):
---   * beer_id columns in inventory/brewing/orders are OPAQUE references to
---     the catalog context — no cross-context foreign keys, so each context
---     can later move to its own schema or database without breaking DDL.
---   * The only FK is order_lines → orders: they live inside the same
---     aggregate boundary.
---   * Money is stored as minor units (cents) + ISO currency, matching the
---     shared.Money value object.
+-- The write model is an EVENT STORE: append-only streams of domain events,
+-- one stream per aggregate (SalesOrder-<id>, Availability-<id>), with
+-- optimistic concurrency on (stream_id, version). It is the source of
+-- truth; the read-model tables are projections that can be rebuilt from it
+-- at any time.
+--
+-- As in the in-memory layout, each module owns its data: no foreign keys
+-- cross module boundaries, so a module can move to its own database
+-- without DDL surgery.
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- catalog ---------------------------------------------------------------------
-CREATE TABLE "beers" (
-    "id"          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    "name"        varchar(200) NOT NULL,
-    "style"       varchar(20)  NOT NULL,
-    "abv"         numeric(4,1) NOT NULL CHECK ("abv" >= 0 AND "abv" <= 20),
-    "price_cents" bigint       NOT NULL CHECK ("price_cents" >= 0),
-    "currency"    char(3)      NOT NULL,
-    "description" text         NOT NULL DEFAULT '',
-    "status"      varchar(10)  NOT NULL DEFAULT 'active',
-    "created_at"  timestamptz  NOT NULL DEFAULT now(),
-    "updated_at"  timestamptz  NOT NULL DEFAULT now(),
-    CONSTRAINT "uq_beers_name" UNIQUE ("name")
+-- write model: event store --------------------------------------------------
+CREATE TABLE "events" (
+    "stream_id"   varchar(100) NOT NULL,
+    "version"     integer      NOT NULL CHECK ("version" > 0),
+    "commit_id"   uuid         NOT NULL,
+    "event_type"  varchar(120) NOT NULL,
+    "payload"     jsonb        NOT NULL,
+    "occurred_at" timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY ("stream_id", "version")
 );
-CREATE INDEX "ix_beers_status" ON "beers" ("status");
+CREATE INDEX "ix_events_commit_id" ON "events" ("commit_id");
+CREATE INDEX "ix_events_event_type" ON "events" ("event_type");
 
--- inventory -------------------------------------------------------------------
-CREATE TABLE "stock_items" (
-    "beer_id"       uuid PRIMARY KEY,
-    "quantity"      integer     NOT NULL DEFAULT 0 CHECK ("quantity" >= 0),
-    "reorder_level" integer     NOT NULL DEFAULT 0 CHECK ("reorder_level" >= 0),
-    "updated_at"    timestamptz NOT NULL DEFAULT now()
+-- read model: sales ----------------------------------------------------------
+CREATE TABLE "sales_orders" (
+    "id"                 uuid PRIMARY KEY,
+    "sales_order_number" varchar(50)  NOT NULL,
+    "order_date"         timestamptz  NOT NULL,
+    "customer_id"        uuid         NOT NULL,
+    "customer_name"      varchar(200) NOT NULL,
+    "projected_at"       timestamptz  NOT NULL DEFAULT now()
 );
 
--- brewing ---------------------------------------------------------------------
-CREATE TABLE "batches" (
-    "id"           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    "beer_id"      uuid        NOT NULL,
-    "units"        integer     NOT NULL CHECK ("units" > 0),
-    "status"       varchar(10) NOT NULL DEFAULT 'brewing',
-    "started_at"   timestamptz NOT NULL DEFAULT now(),
-    "completed_at" timestamptz
+CREATE TABLE "sales_order_rows" (
+    "sales_order_id"  uuid         NOT NULL REFERENCES "sales_orders" ("id") ON DELETE CASCADE,
+    "beer_id"         uuid         NOT NULL,
+    "beer_name"       varchar(200) NOT NULL,
+    "quantity"        integer      NOT NULL,
+    "unit_of_measure" varchar(10)  NOT NULL,
+    "price"           numeric(12,2) NOT NULL,
+    "currency"        char(3)      NOT NULL,
+    PRIMARY KEY ("sales_order_id", "beer_id")
 );
-CREATE INDEX "ix_batches_beer_id" ON "batches" ("beer_id");
-CREATE INDEX "ix_batches_status" ON "batches" ("status");
 
--- orders ----------------------------------------------------------------------
-CREATE TABLE "orders" (
-    "id"            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    "customer_name" varchar(200) NOT NULL,
-    "status"        varchar(10)  NOT NULL DEFAULT 'pending',
-    "reject_reason" text         NOT NULL DEFAULT '',
-    "created_at"    timestamptz  NOT NULL DEFAULT now(),
-    "updated_at"    timestamptz  NOT NULL DEFAULT now()
-);
-CREATE INDEX "ix_orders_status" ON "orders" ("status");
-
-CREATE TABLE "order_lines" (
-    "order_id"         uuid    NOT NULL REFERENCES "orders" ("id") ON DELETE CASCADE,
-    "beer_id"          uuid    NOT NULL,
-    "units"            integer NOT NULL CHECK ("units" > 0),
-    "unit_price_cents" bigint  NOT NULL CHECK ("unit_price_cents" >= 0),
-    "currency"         char(3) NOT NULL,
-    PRIMARY KEY ("order_id", "beer_id")
+-- read model: warehouses -----------------------------------------------------
+CREATE TABLE "availabilities" (
+    "beer_id"         uuid PRIMARY KEY,
+    "beer_name"       varchar(200) NOT NULL,
+    "quantity"        integer      NOT NULL,
+    "unit_of_measure" varchar(10)  NOT NULL,
+    "projected_at"    timestamptz  NOT NULL DEFAULT now()
 );

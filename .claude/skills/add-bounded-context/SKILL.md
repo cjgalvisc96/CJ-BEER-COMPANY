@@ -1,40 +1,41 @@
 ---
 name: add-bounded-context
-description: Add a new bounded context to the CJ-BEER-COMPANY modular monolith following the established vertical-slice layout.
+description: Add a new BrewUp-style module (bounded context) to the CJ-BEER-COMPANY modular monolith — e.g. Payment or Shipping from the book's context map.
 ---
 
-# Add a bounded context
+# Add a module (bounded context)
 
-Follow the shape of an existing context (`internal/inventory` is the
-smallest complete example).
+Mirror an existing module (`internal/warehouses` is the complete example).
 
-1. **Domain first** — `internal/<ctx>/domain/`:
-   - Aggregate root embedding `shared.AggregateRoot`; unexported fields;
-     behavior methods that validate and `RecordEvent`.
-   - Typed ID over `shared.EntityID`; opaque `XxxRef` types for other
-     contexts' aggregates.
-   - `events.go` (topic consts + event structs), `errors.go` (shared error
-     kinds), `repository.go` (the port), `Rehydrate*` constructor for
-     persistence.
-2. **Application** — `application/commands/*.go` (one handler per file:
-   parse → load/build aggregate → mutate → `Save` → `Publish(PullEvents())`),
-   `application/queries/`, `application/dto/`.
-   - Needs data from another context? Define a port in `application/ports`
-     with a context-local snapshot struct.
-   - Reacts to another context's events? Add `application/eventhandlers`
-     with local contract structs of only the fields consumed.
-3. **Infrastructure** — `infrastructure/persistence/memory_<agg>_repository.go`
-   (record snapshot + `sync.RWMutex`, rehydrate on read);
-   `infrastructure/acl/` adapters for the ports (import the other context's
-   *application queries* only).
-4. **Wire** — `module.go` with `Register(do.Injector)` (+
-   `SubscribeEventHandlers(injector, bus)` if it consumes events). Call both
-   from `internal/app/app.go`.
-5. **Expose** — handlers in `internal/presentation/http/<agg>_handlers.go`,
-   routes in `router.go` under `/api/v1/...`.
-6. **Persist** — new versioned migration in `migrations/versions` (no FKs to
-   other contexts' tables), then `task migrate:hash`.
-7. **Test** — domain unit tests, a use-case test with fakes if it has ports,
-   and an e2e scenario in `tests/` if it participates in a choreography.
-8. Update `docs/architecture/overview.md` + `events.md`; run the
-   quality-gate command.
+1. **Shared kernel** — `internal/<module>/sharedkernel/`:
+   - `customtypes.go`: strongly named ids/values (`PaymentId{Value uuid.UUID}`).
+   - `commands/`: imperative structs embedding `muflone.CommandBase`
+     (aggregateId + commitId) with a `MessageName()` like
+     `"<module>.<verb_noun>"` and a `New*` constructor.
+   - `events/`: past-tense structs embedding `muflone.DomainEventBase`.
+   - `integrationevents/`: separate types for anything shared outward.
+2. **Domain** — `internal/<module>/domain/`:
+   - Event-sourced aggregate: `StreamName` const, `New<Aggregate>()`
+     binding the router, factory validating invariants + `RaiseEvent`,
+     `Route` type-switch dispatching to apply methods (the ONLY place
+     state is assigned).
+   - `commandhandlers/`: one handler per command — GetByID (or create on
+     `muflone.ErrAggregateNotFound`), call the aggregate method,
+     `repository.Save(ctx, aggregate, uuid.New())`. Business refusals log
+     + return nil; infrastructure errors propagate.
+3. **Read model** — `internal/<module>/readmodel/`:
+   - `dtos/` (query shapes), `services/` (projection writer + queries,
+     `sync.RWMutex`), `eventhandlers/` (project each domain event).
+4. **Facade + module** — `facade.go` (inbound JSON shape, command
+   building, query pass-through) and `module.go` (`Register(injector, bus)`:
+   event store, repository, `muflone.RegisterCommandHandler`,
+   `RegisterDomainEventHandler` for projections/integration publishers,
+   `SubscribeIntegrationEvent` for inbound reactions, provide the Facade).
+5. **Wire** in `internal/app/app.go`; map endpoints in `internal/rest`
+   (facade only!).
+6. **Persist** — projection tables in a new Atlas migration (no FKs to
+   other modules), then `task migrate:hash`.
+7. **Test** — specification tests per command (Given/When/Expect), an e2e
+   scenario if it joins the choreography, and extend
+   `tests/architecture_test.go` with the new module's isolation rules.
+8. Update `docs/architecture/overview.md` + `events.md`; run quality-gate.

@@ -1,30 +1,32 @@
-# ADR-0002: Cross-context collaboration via event choreography (Watermill)
+# ADR-0002: Cross-context collaboration via events on a service bus (Watermill)
 
-- **Status**: accepted
+- **Status**: accepted (refined by ADR-0005)
 - **Date**: 2026-07-05
 
 ## Context
 
-Inventory must react to production (brewing) and sales (orders). Direct
-calls between contexts' write sides would couple their transactions and
-their availability.
+Modules must react to each other (a sales order allocates warehouse stock)
+without coupling their write sides. The book's journey replaces the
+mediator (direct, synchronous orchestration between facades) with a
+service bus and events.
 
 ## Decision
 
-Contexts communicate through events on a Watermill bus (GoChannel pub/sub
-in-process today). The reservation flow is a *choreography*: orders publishes
-`order_placed`; inventory reserves and publishes the outcome
-(`order_stock_reserved|rejected`); orders settles the order. Consumers
-define their own contract structs; topic names are the only shared surface.
-Read-side lookups that must be synchronous (order placement validating a
-beer) go through an application-layer port + ACL adapter instead.
+Messages travel on a service bus (`muflone.ServiceBus`, Watermill GoChannel
+in-process today; the book uses RabbitMQ — a transport detail):
+
+- **Commands**: producer-consumer, exactly one handler.
+- **Domain events**: pub/sub inside the owning module (projections,
+  integration publishers).
+- **Integration events**: pub/sub across modules; consumers deserialize
+  their own contract structs and never import the producer's types. The
+  flow is a *choreography* — no central orchestrator.
 
 ## Consequences
 
-- Placing an order returns **202** with a `pending` order; confirmation is
-  eventually consistent (tests poll with `require.Eventually`).
-- Swapping GoChannel for Kafka/NATS touches only
-  `shared/infrastructure/messaging`.
-- No saga orchestrator or compensation yet — acceptable while reservations
-  are single-consumer and in-process (revisit with ADR when extracting a
-  context).
+- Writing returns immediately with the pre-generated aggregate id;
+  outcomes are eventually consistent (tests poll with `require.Eventually`).
+- Swapping GoChannel for RabbitMQ/Kafka touches only the ServiceBus.
+- No saga/process manager yet (book Ch. 12): acceptable while the flow is
+  a two-module choreography; revisit with an ADR when compensation logic
+  appears.
