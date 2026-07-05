@@ -10,7 +10,6 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/dtos"
-	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/services"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/sharedkernel"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/sharedkernel/commands"
 )
@@ -23,13 +22,20 @@ type ProductionOrderJson struct {
 	Quantity customtypes.Quantity `json:"quantity"`
 }
 
+// AvailabilityQueries is the read-side port of the facade; the in-memory
+// and Postgres read-model services both implement it.
+type AvailabilityQueries interface {
+	GetAvailability(ctx context.Context, beerId string) (dtos.Availability, error)
+	GetAvailabilities(ctx context.Context) ([]dtos.Availability, error)
+}
+
 // Facade is the module's public surface (the book's IWarehousesFacade).
 type Facade struct {
 	bus     *muflone.ServiceBus
-	queries *services.AvailabilityService
+	queries AvailabilityQueries
 }
 
-func NewFacade(bus *muflone.ServiceBus, queries *services.AvailabilityService) *Facade {
+func NewFacade(bus *muflone.ServiceBus, queries AvailabilityQueries) *Facade {
 	return &Facade{bus: bus, queries: queries}
 }
 
@@ -52,10 +58,10 @@ func (f *Facade) UpdateAvailabilityDueToProductionOrder(ctx context.Context, bod
 	return beerId.String(), nil
 }
 
-func (f *Facade) GetAvailability(ctx context.Context, beerId string) (dtos.Availability, bool) {
+func (f *Facade) GetAvailability(ctx context.Context, beerId string) (dtos.Availability, error) {
 	return f.queries.GetAvailability(ctx, beerId)
 }
 
-func (f *Facade) GetAvailabilities(ctx context.Context) []dtos.Availability {
+func (f *Facade) GetAvailabilities(ctx context.Context) ([]dtos.Availability, error) {
 	return f.queries.GetAvailabilities(ctx)
 }

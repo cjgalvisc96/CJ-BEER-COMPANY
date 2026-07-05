@@ -43,6 +43,13 @@ func (p *AvailabilityProjector) OnBeerAvailabilityUpdated(
 	return p.upsert(ctx, event.BeerId.Value.String(), event.BeerName.Value, event.Quantity)
 }
 
+func (p *AvailabilityProjector) OnAvailabilityCompensated(
+	ctx context.Context,
+	event events.AvailabilityCompensated,
+) error {
+	return p.upsert(ctx, event.BeerId.Value.String(), event.BeerName.Value, event.Quantity)
+}
+
 func (p *AvailabilityProjector) upsert(
 	ctx context.Context,
 	beerId, beerName string,

@@ -53,8 +53,10 @@ func (h *UpdateAvailabilityDueToProductionOrderCommandHandler) Handle(
 	return h.repository.Save(ctx, aggregate, uuid.New())
 }
 
-// UpdateAvailabilityDueToSalesOrderCommandHandler allocates stock to a
-// sales order.
+// UpdateAvailabilityDueToSalesOrderCommandHandler executes one saga step.
+// The outcome — BeerAvailabilityUpdated or QuantityNotFound (the book's
+// Ch. 12 failure event) — is recorded on the aggregate and published; the
+// saga reacts to it.
 type UpdateAvailabilityDueToSalesOrderCommandHandler struct {
 	repository muflone.Repository[*domain.Availability]
 	logger     *slog.Logger
@@ -73,16 +75,49 @@ func (h *UpdateAvailabilityDueToSalesOrderCommandHandler) Handle(
 ) error {
 	aggregate, err := h.repository.GetByID(ctx, command.AggregateID())
 	if err != nil {
-		return err
-	}
-	if err := aggregate.UpdateDueToSalesOrder(command.CommitID(), command.Quantity); err != nil {
-		// Allocation failures are business outcomes, not poison messages:
-		// log and ack so the bus does not redeliver forever.
-		if errors.Is(err, domain.ErrNotEnoughStock) {
-			h.logger.Warn("warehouses.allocation_refused", slog.String("reason", err.Error()))
-			return nil
+		if !errors.Is(err, muflone.ErrAggregateNotFound) {
+			return err
 		}
+		// An untracked beer has zero availability: record the refusal so
+		// the saga fails the step instead of hanging.
+		refusal := domain.RefuseUnknownBeer(
+			command.BeerId, command.CommitID(), command.Quantity, command.SalesOrderId,
+		)
+		return h.repository.Save(ctx, refusal, uuid.New())
+	}
+	if err := aggregate.UpdateDueToSalesOrder(command.CommitID(), command.Quantity, command.SalesOrderId); err != nil {
 		return err
 	}
+	return h.repository.Save(ctx, aggregate, uuid.New())
+}
+
+// CompensateAvailabilityDueToFailedAllocationCommandHandler executes the
+// saga's compensating transaction.
+type CompensateAvailabilityDueToFailedAllocationCommandHandler struct {
+	repository muflone.Repository[*domain.Availability]
+	logger     *slog.Logger
+}
+
+func NewCompensateAvailabilityDueToFailedAllocationCommandHandler(
+	repository muflone.Repository[*domain.Availability],
+	logger *slog.Logger,
+) *CompensateAvailabilityDueToFailedAllocationCommandHandler {
+	return &CompensateAvailabilityDueToFailedAllocationCommandHandler{repository: repository, logger: logger}
+}
+
+func (h *CompensateAvailabilityDueToFailedAllocationCommandHandler) Handle(
+	ctx context.Context,
+	command commands.CompensateAvailabilityDueToFailedAllocation,
+) error {
+	aggregate, err := h.repository.GetByID(ctx, command.AggregateID())
+	if err != nil {
+		return err
+	}
+	if err := aggregate.CompensateDueToFailedAllocation(command.CommitID(), command.Quantity, command.SalesOrderId); err != nil {
+		return err
+	}
+	h.logger.Info("warehouses.compensation_applied",
+		slog.String("beer_id", command.BeerId.Value.String()),
+		slog.String("sales_order_id", command.SalesOrderId))
 	return h.repository.Save(ctx, aggregate, uuid.New())
 }

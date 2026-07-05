@@ -2,38 +2,74 @@ package sales
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 
 	"github.com/samber/do/v2"
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
+	"github.com/cjgalvisc96/cj-beer-company/internal/platform/config"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/domain"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/domain/commandhandlers"
+	"github.com/cjgalvisc96/cj-beer-company/internal/sales/integration"
+	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/dtos"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/eventhandlers"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/services"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/sharedkernel/events"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/sharedkernel/integrationevents"
 )
 
-// Register wires the Sales module: event-sourced repository, command
-// handler, read-model projections, and the integration publisher. It is
-// the module's composition root.
+// salesOrderReadModel is what the module needs from a read-model adapter:
+// the projection writers plus the facade queries.
+type salesOrderReadModel interface {
+	CreateSalesOrder(ctx context.Context, order dtos.SalesOrder) error
+	UpdateAllocationStatus(ctx context.Context, salesOrderId, status, reason string) error
+	SalesOrderQueries
+}
+
+// Register wires the Sales module: event registry, event-sourced
+// repository (durable when DB_URL is configured, in-memory otherwise),
+// command handlers, read-model projections, the integration publisher,
+// and the reactions settling the order from the allocation-saga outcome.
 func Register(injector do.Injector, bus *muflone.ServiceBus) {
 	logger := do.MustInvoke[*slog.Logger](injector)
+	cfg := do.MustInvoke[config.Config](injector)
 
-	// Write model: one event store per module — each context owns its data.
-	store := muflone.NewInMemoryEventStore()
+	// The registry rehydrates this module's events from the store; new
+	// event versions register their upcasters here (book Ch. 11).
+	registry := muflone.NewEventRegistry()
+	muflone.RegisterEvent[events.SalesOrderCreated](registry)
+	muflone.RegisterEvent[events.SalesOrderAllocated](registry)
+	muflone.RegisterEvent[events.SalesOrderAllocationRejected](registry)
+
+	// Write + read model adapters: each context owns its data.
+	var store muflone.EventStore = muflone.NewInMemoryEventStore()
+	var readModel salesOrderReadModel = services.NewSalesOrderService()
+	if cfg.DBURL != "" {
+		db := do.MustInvoke[*sql.DB](injector)
+		store = muflone.NewPostgresEventStore(db, registry)
+		readModel = services.NewPostgresSalesOrderService(db)
+	}
+
 	repository := muflone.NewEventStoreRepository(
 		store, domain.NewSalesOrder, domain.StreamName, bus,
 	)
 	muflone.RegisterCommandHandler(bus,
 		commandhandlers.NewCreateSalesOrderCommandHandler(repository, logger))
+	muflone.RegisterCommandHandler(bus,
+		commandhandlers.NewMarkSalesOrderAllocatedCommandHandler(repository, logger))
+	muflone.RegisterCommandHandler(bus,
+		commandhandlers.NewMarkSalesOrderAllocationRejectedCommandHandler(repository, logger))
 
 	// Read model: projections subscribe to the module's domain events.
-	queryService := services.NewSalesOrderService()
-	projection := eventhandlers.NewSalesOrderCreatedEventHandler(queryService, logger)
+	projection := eventhandlers.NewSalesOrderCreatedEventHandler(readModel, logger)
 	muflone.RegisterDomainEventHandler(bus, "sales.readmodel.sales_order_created",
 		projection.Handle)
+	statusProjector := eventhandlers.NewAllocationStatusProjector(readModel, logger)
+	muflone.RegisterDomainEventHandler(bus, "sales.readmodel.sales_order_allocated",
+		statusProjector.OnSalesOrderAllocated)
+	muflone.RegisterDomainEventHandler(bus, "sales.readmodel.sales_order_allocation_rejected",
+		statusProjector.OnSalesOrderAllocationRejected)
 
 	// Integration: republish the fact for other bounded contexts as a
 	// dedicated integration event (never the domain event itself).
@@ -53,16 +89,15 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 			))
 		})
 
-	// The warehouse answers with BeerAvailabilityUpdated (integration):
-	// Sales is notified that stock was allocated for its order.
-	bus.SubscribeIntegrationEvent("sales.on_beer_availability_updated",
-		"warehouses.beer_availability_updated",
-		func(ctx context.Context, payload []byte) error {
-			logger.Info("sales.stock_allocation_notified", slog.String("payload", string(payload)))
-			return nil
-		})
+	// The warehouse's allocation saga answers with its outcome: settle the
+	// order accordingly (book Ch. 12, Figure 12.3).
+	outcomes := integration.NewAllocationOutcomeHandler(bus, logger)
+	bus.SubscribeIntegrationEvent("sales.on_order_allocation_completed",
+		integration.OrderAllocationCompletedTopic, outcomes.OnAllocationCompleted)
+	bus.SubscribeIntegrationEvent("sales.on_order_allocation_rejected",
+		integration.OrderAllocationRejectedTopic, outcomes.OnAllocationRejected)
 
 	do.Provide(injector, func(i do.Injector) (*Facade, error) {
-		return NewFacade(bus, queryService), nil
+		return NewFacade(bus, readModel), nil
 	})
 }

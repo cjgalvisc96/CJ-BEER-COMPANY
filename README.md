@@ -1,139 +1,125 @@
 # CJ-BEER-COMPANY 🍺
 
-The **Go rendition of BrewUp** — the brewery application built throughout
-*Domain-Driven Refactoring* (Colla & Acerbis, Packt) — at the end state of
-the book's journey: a **modular monolith with CQRS and event sourcing**
-(the book's `03-monolith_with_cqrs_and_event_sourcing`, in Go instead of C#).
+A brewery system in Go — the Go rendition of **BrewUp**, the application built
+throughout *Domain-Driven Refactoring* (Colla & Acerbis): a **modular monolith
+with CQRS and event sourcing**.
 
-## Stack
+## Core concepts
 
-| Concern | Here | In the book |
-|---|---|---|
-| CQRS/ES building blocks | `internal/muflone` (Go homage) | [Muflone](https://github.com/CQRS-Muflone/Muflone) |
-| Service bus | [Watermill](https://github.com/ThreeDotsLabs/watermill) (GoChannel) | RabbitMQ |
-| HTTP API | [Gin](https://github.com/gin-gonic/gin) | ASP.NET minimal APIs |
-| Dependency injection | [samber/do v2](https://github.com/samber/do) | .NET DI |
-| Event store | in-memory (Postgres schema versioned with Atlas) | EventStoreDB |
-| Architecture fitness tests | `go/parser` import checks | NetArchTest |
-| Tests | testify + `muflone.CommandSpecification` | xUnit + Muflone.SpecificationTests |
+- **Two bounded contexts**, isolated modules that never import each other:
+  - **`sales`** — customer orders (`CreateSalesOrder` → `SalesOrderCreated`)
+  - **`warehouses`** — beer availability (production orders fill it, sales orders allocate from it)
+- **CQRS + Event Sourcing** — aggregates change state only by raising domain
+  events; an event store (streams + optimistic concurrency) is the source of
+  truth; read models are projections you query. `DB_URL` selects persistence:
+  empty runs in memory (dev/tests), a Postgres URL makes everything durable
+  (production — the compose stack does this, and state survives restarts).
+- **Events over calls** — modules collaborate through integration events on a
+  service bus (Watermill). A sales order crossing to the warehouse:
 
-## Quick start
+  ```
+  Sales                          Warehouses
+    │ SalesOrderCreated ────────────▶ order-allocation SAGA: one step per row
+    │ ◀── order_allocation_completed │ (a failed step compensates the
+    │     or _rejected               │  already-allocated rows — book Ch. 12)
+    order status → allocated | rejected
+  ```
+- **Saga with compensating transactions** — the allocation is an
+  event-sourced saga (`OrderAllocationSaga-<orderId>` stream): a shortage is
+  the book's `QuantityNotFound` event, previously allocated rows are given
+  back (backward recovery), every message is idempotent under redelivery.
+- **Facades are the only public surface** — the REST layer (Gin) talks to
+  `sales.Facade` / `warehouses.Facade`, never to module internals.
+- **`internal/muflone`** — a small Go homage to the authors'
+  [Muflone](https://github.com/CQRS-Muflone/Muflone) library: commands/events
+  with `aggregateId` + `commitId`, `AggregateRoot` (RaiseEvent/Apply),
+  event-store repository, service bus, and a Given/When/Expect
+  specification-test harness.
+- **Architecture enforced by tests** — fitness functions
+  (`task check:architecture`) fail the build on any forbidden dependency, and
+  a hard gate requires **100% unit-test coverage** (`task cover`).
 
-Requires [Task](https://taskfile.dev):
+Deep dives: [`docs/`](docs/) (architecture overview, message catalog, ADRs).
+
+## Installation
+
+Pick one:
+
+**1. Go only** (zero dependencies, everything in memory):
 
 ```bash
-task run          # zero-dependency: serve on :8080, everything in memory
-task test         # specification + e2e + architecture fitness tests
-task test:race    # same, under the race detector
-task cover        # HARD GATE: 100% unit coverage (internal/app exempt)
-task docker:up    # postgres → atlas migrate → api → seeded demo data
+go run ./cmd/api                # serves on :8080
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same gate on every push/PR, in
-seven jobs: **lint** (gofmt, vet, staticcheck, tidy check),
-**architecture** (`task check:architecture` — the fitness functions:
-Sales ⊥ Warehouses, REST-through-facades-only, muflone stays generic,
-per-module SharedKernel/Domain/ReadModel layering), **test** (race
-detector + the 100% coverage gate, coverage artifact), **vulnerabilities**
-(govulncheck), **migrations** (`atlas.sum` integrity + real apply against
-a Postgres service), **e2e-smoke** (the full compose stack exercising the
-production → order → allocation choreography), and **image** (buildx +
-Trivy scan; pushed to GHCR with sha/semver/latest tags outside PRs).
-Dependabot keeps modules, actions, and base images fresh.
+**2. With [Task](https://taskfile.dev)** (same, plus the dev workflow):
 
-### Try the flow (the book's Figure 4.2)
+```bash
+task run                        # run the API
+task test                       # all tests
+task --list                     # everything else
+```
+
+**3. Docker Compose** (full stack: Postgres → Atlas migrations → API → demo data):
+
+```bash
+task docker:up                  # or: docker compose up --build -d
+task docker:down                # stop (add `-- -v` to drop the db volume)
+```
+
+**4. Docker image** (production distroless build):
+
+```bash
+docker build -t cj-beer-company .          # or: task docker:build
+docker run -p 8080:8080 cj-beer-company
+```
+
+Configuration via environment (see `.env.example`): `HTTP_ADDR`, `LOG_LEVEL`,
+`GIN_MODE`.
+
+## Using the app
+
+Produce beer, sell it, watch the stock move:
 
 ```bash
 BEER=11111111-1111-1111-1111-111111111111
 
 # 1. A production order fills the warehouse
-curl -s localhost:8080/v1/warehouses/availability -d "{
-  \"beer_id\":\"$BEER\",\"beer_name\":\"BrewUp IPA\",
-  \"quantity\":{\"value\":100,\"unit_of_measure\":\"Lt\"}}" | jq
+curl localhost:8080/v1/warehouses/availability -d '{
+  "beer_id":"'$BEER'", "beer_name":"BrewUp IPA",
+  "quantity":{"value":100,"unit_of_measure":"Lt"}}'
 
 # 2. A customer places a sales order
-curl -s localhost:8080/v1/sales -d "{
-  \"sales_order_number\":\"20260705-0001\",\"customer_name\":\"Muflone\",
-  \"rows\":[{\"beer_id\":\"$BEER\",\"beer_name\":\"BrewUp IPA\",
-    \"quantity\":{\"value\":30,\"unit_of_measure\":\"Lt\"},
-    \"price\":{\"value\":5,\"currency\":\"EUR\"}}]}" | jq
+curl localhost:8080/v1/sales -d '{
+  "sales_order_number":"20260705-0001", "customer_name":"Muflone",
+  "rows":[{"beer_id":"'$BEER'","beer_name":"BrewUp IPA",
+           "quantity":{"value":30,"unit_of_measure":"Lt"},
+           "price":{"value":5,"currency":"EUR"}}]}'
 
-# 3. Eventually consistent read models
-curl -s localhost:8080/v1/sales | jq                      # the projected order
-curl -s localhost:8080/v1/warehouses/availability | jq    # 70 Lt remaining
+# 3. Read models (eventually consistent — writes return immediately)
+curl localhost:8080/v1/sales                          # projected orders
+curl localhost:8080/v1/warehouses/availability        # 70 Lt remaining
 ```
 
-## Architecture
+### API
 
-Two modules — `sales` and `warehouses` — exactly as BrewUp codes them,
-each split like the book's projects:
-
-```
-internal/
-├── muflone/            Command/DomainEvent (aggregateId + commitId), AggregateRoot
-│                       (RaiseEvent/Apply/Version), EventStoreRepository (stream
-│                       replay + optimistic concurrency), ServiceBus,
-│                       CommandSpecification test harness
-├── sales/                                 BrewUp.Sales.*
-│   ├── sharedkernel/{commands,events,integrationevents}   published language
-│   ├── domain/{sales_order.go,commandhandlers}            event-sourced write model
-│   ├── readmodel/{dtos,eventhandlers,services}            projections + queries
-│   └── facade.go + module.go                              ISalesFacade + wiring
-├── warehouses/                            BrewUp.Warehouses.* (same shape)
-├── rest/               BrewUp.Rest — endpoints; depends ONLY on facades
-├── shared/customtypes/ Quantity(100,"Lt"), Price(5,"EUR")
-└── app/                composition root, graceful shutdown
-```
-
-The exact message names from the book: `CreateSalesOrder` →
-`SalesOrderCreated`; `UpdateAvailabilityDueToProductionOrder` →
-`AvailabilityUpdatedDueToProductionOrder`; allocation →
-`BeerAvailabilityUpdated`. Domain events stay inside their module;
-**integration events are separate types** even when the shape matches
-(the book's Chapter 4 warning), and consumers deserialize their own
-contract structs — modules never import each other.
-
-```
-Sales                          Warehouses
-  │ SalesOrderCreated ─(integration)─▶ UpdateAvailabilityDueToSalesOrder per row
-  │                                    │ BeerAvailabilityUpdated (remaining)
-  │ ◀────────(integration)────────────┘
-```
-
-`Payment` and `Shipping` complete the book's context map and are the next
-modules to add (see `docs/architecture/events.md`).
-
-### Testing (the book's Chapter 5–7 practices)
-
-- **Specification tests** — Given events / When command / Expect events,
-  through the real handler and an in-memory event store; includes the
-  book's two examples verbatim (create a sales order; 100 Lt + 100 Lt
-  production → 200 Lt).
-- **E2E safety net** — `Can_Create_SalesOrder`-style endpoint tests with
-  eventual-consistency polling.
-- **Fitness functions** — imports are parsed and asserted: Sales ⊥
-  Warehouses, REST → facades only, muflone stays generic.
-- **100% unit coverage, enforced** — `task cover` fails if any internal
-  package drops below 100% (error branches are made reachable with fakes;
-  only the `internal/app` composition root is exempt, and it is
-  smoke-tested).
-
-> **Why `internal/` and not `src/`?** In Go the layout *is* the import
-> path: packages under `internal/` are un-importable from any other module
-> — compiler-enforced privacy, the toolchain-native NetArchTest.
-
-Repo scaffolding: `migrations/` (Atlas: event store + projection tables,
-no cross-module FKs), `docker/` + `docker-compose.yml` (postgres → migrate
-→ api → seed), `docs/` (overview, message catalog, ADRs), `.claude/` and
-`.agents/` (AI-harness rules and role charters), `.env.example`.
-
-## Where this sits in the book's journey
-
-| Book stage | Status |
+| Method & path | Purpose |
 |---|---|
-| Big ball of mud → modules (Ch. 6) | built modular from the start |
-| Mediator between facades (Ch. 6) | skipped — superseded by the service bus, as the book itself does |
-| CQRS read models (Ch. 7, branch 02) | ✅ `readmodel/` per module |
-| Event sourcing + specification tests (Ch. 7, branch 03) | ✅ this repo |
-| Database refactoring (Ch. 8) | schema versioned; in-memory store swappable |
-| Event versioning (Ch. 11), sagas (Ch. 12), microservices (Ch. 10) | future ADRs |
+| `POST /v1/sales` | Place a sales order (returns the new order id) |
+| `GET /v1/sales` · `GET /v1/sales/:id` | Query order projections |
+| `POST /v1/warehouses/availability` | Declare a finished production order |
+| `GET /v1/warehouses/availability[/:beerId]` | Query stock projections |
+| `GET /healthz` · `GET /readyz` | Liveness · readiness (checks the database in durable mode) |
+
+## Development
+
+```bash
+task lint                 # gofmt + go vet
+task check:architecture   # fitness functions (module boundaries)
+task test:race            # all tests under the race detector
+task cover                # hard gate: 100% unit coverage
+task migrate:apply        # Atlas migrations (see migrations/)
+```
+
+CI (`.github/workflows/ci.yml`) runs the same gate on every push/PR, plus
+vulnerability scanning, migration verification against Postgres, a compose
+smoke test, and the image build/scan/publish to GHCR.

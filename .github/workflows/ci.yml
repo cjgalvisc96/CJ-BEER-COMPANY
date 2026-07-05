@@ -200,6 +200,18 @@ jobs:
           test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" | jq -r .quantity.value)" = "70"
           echo "choreography OK: 100 Lt produced, 30 Lt allocated, 70 Lt left"
 
+          # Production readiness: the event store and projections live in
+          # Postgres, so a restarted API must still see everything.
+          test "$(curl -sf localhost:8080/readyz | jq -r .status)" = "ready"
+          docker restart cjbeer-api
+          for _ in $(seq 1 30); do
+            curl -sf localhost:8080/healthz >/dev/null && break
+            sleep 1
+          done
+          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" | jq -r .quantity.value)" = "70"
+          test "$(curl -sf "localhost:8080/v1/sales/$ORDER" | jq -r .sales_order_number)" = "ci-0001"
+          echo "durability OK: state survived the API restart"
+
       - name: Dump logs on failure
         if: failure()
         run: docker compose logs

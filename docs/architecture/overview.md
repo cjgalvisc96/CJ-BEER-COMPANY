@@ -53,9 +53,12 @@ library used by BrewUp. It provides:
   bumps `Version`
 - `EventStoreRepository` — `GetByID` replays the stream; `Save` appends
   uncommitted events with optimistic concurrency, then publishes them
-- `InMemoryEventStore` — streams in memory; source of truth today (swap
-  for EventStoreDB/Postgres by implementing `EventStore`; the target SQL
-  schema is already in `migrations/`)
+- Two `EventStore` adapters — `InMemoryEventStore` (dev, tests) and
+  `PostgresEventStore` (production: the `events` table in `migrations/`,
+  concurrency via head check + primary key). `DB_URL` selects the mode
+  (ADR-0006)
+- `EventRegistry` — rehydrates stored events by type name, with
+  **upcasters** for schema evolution (ADR-0007, book Ch. 11)
 - `ServiceBus` — commands via producer-consumer (one handler), events via
   pub/sub, on Watermill (the book uses RabbitMQ; a transport detail)
 - `CommandSpecification` — the Given/When/Expect test harness

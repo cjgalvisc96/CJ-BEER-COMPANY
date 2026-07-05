@@ -16,6 +16,10 @@ type SalesOrder struct {
 	CustomerId       string          `json:"customer_id"`
 	CustomerName     string          `json:"customer_name"`
 	Rows             []SalesOrderRow `json:"rows"`
+	// AllocationStatus tracks the warehouse saga: pending → allocated |
+	// rejected (with the reason).
+	AllocationStatus string `json:"allocation_status"`
+	RejectionReason  string `json:"rejection_reason,omitempty"`
 }
 
 type SalesOrderRow struct {

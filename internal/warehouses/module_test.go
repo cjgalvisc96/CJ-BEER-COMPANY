@@ -1,0 +1,34 @@
+package warehouses_test
+
+import (
+	"log/slog"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/samber/do/v2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
+	"github.com/cjgalvisc96/cj-beer-company/internal/platform/config"
+	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses"
+)
+
+// TestRegisterWiresDurablePersistence: with DB_URL configured the module
+// selects the Postgres event store and read model.
+func TestRegisterWiresDurablePersistence(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	injector := do.New()
+	do.ProvideValue(injector, slog.Default())
+	do.ProvideValue(injector, config.Config{DBURL: "postgres://configured"})
+	do.ProvideValue(injector, db)
+	bus := muflone.NewServiceBus(slog.Default())
+	t.Cleanup(func() { _ = bus.Close() })
+
+	warehouses.Register(injector, bus)
+
+	assert.NotNil(t, do.MustInvoke[*warehouses.Facade](injector))
+}

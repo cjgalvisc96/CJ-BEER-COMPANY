@@ -27,6 +27,6 @@ in-process today; the book uses RabbitMQ — a transport detail):
 - Writing returns immediately with the pre-generated aggregate id;
   outcomes are eventually consistent (tests poll with `require.Eventually`).
 - Swapping GoChannel for RabbitMQ/Kafka touches only the ServiceBus.
-- No saga/process manager yet (book Ch. 12): acceptable while the flow is
-  a two-module choreography; revisit with an ADR when compensation logic
-  appears.
+- Compensation logic arrived with the order-allocation process: see
+  ADR-0008 for the event-sourced saga with compensating transactions
+  (book Ch. 12) that coordinates it.

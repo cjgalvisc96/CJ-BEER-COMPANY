@@ -42,6 +42,9 @@ services:
       HTTP_ADDR: ":8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       GIN_MODE: ${GIN_MODE:-release}
+      # Durable mode: event store + read models live in Postgres, so data
+      # survives restarts (in-memory mode is for `task run` and tests).
+      DB_URL: postgres://${DB_USER:-beer}:${DB_PASSWORD:-beerpassword}@postgres:5432/${DB_NAME:-beer}?sslmode=disable
     ports:
       - "8080:8080"
     depends_on:

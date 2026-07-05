@@ -9,6 +9,10 @@ type Config struct {
 	HTTPAddr string
 	LogLevel string
 	GinMode  string
+	// DBURL switches persistence: empty runs everything in memory (dev,
+	// tests); a Postgres URL makes the event store and the read models
+	// durable (production).
+	DBURL string
 }
 
 // Load reads configuration from the environment, falling back to sane
@@ -18,6 +22,7 @@ func Load() Config {
 		HTTPAddr: getEnv("HTTP_ADDR", ":8080"),
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 		GinMode:  getEnv("GIN_MODE", "release"),
+		DBURL:    getEnv("DB_URL", ""),
 	}
 }
 

@@ -5,6 +5,7 @@
 package rest
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -17,14 +18,33 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses"
 )
 
+// ReadinessCheck reports whether downstream dependencies (the database)
+// are reachable. Nil means the app has none (in-memory mode).
+type ReadinessCheck func(ctx context.Context) error
+
 // NewRouter maps the endpoints: /v1/sales and /v1/warehouses, mirroring
-// the book's MapSalesEndpoints / MapWarehousesEndpoints.
-func NewRouter(logger *slog.Logger, salesFacade *sales.Facade, warehousesFacade *warehouses.Facade) *gin.Engine {
+// the book's MapSalesEndpoints / MapWarehousesEndpoints, plus the
+// liveness and readiness probes.
+func NewRouter(
+	logger *slog.Logger,
+	salesFacade *sales.Facade,
+	warehousesFacade *warehouses.Facade,
+	ready ReadinessCheck,
+) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery(), requestLogger(logger))
 
 	engine.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	engine.GET("/readyz", func(c *gin.Context) {
+		if ready != nil {
+			if err := ready(c.Request.Context()); err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "error": err.Error()})
+				return
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
 
 	v1 := engine.Group("/v1")
@@ -49,12 +69,17 @@ func NewRouter(logger *slog.Logger, salesFacade *sales.Facade, warehousesFacade 
 			c.JSON(http.StatusCreated, gin.H{"id": orderId})
 		})
 		salesRoutes.GET("", func(c *gin.Context) {
-			c.JSON(http.StatusOK, salesFacade.GetSalesOrders(c.Request.Context()))
+			orders, err := salesFacade.GetSalesOrders(c.Request.Context())
+			if err != nil {
+				respondError(c, err)
+				return
+			}
+			c.JSON(http.StatusOK, orders)
 		})
 		salesRoutes.GET("/:id", func(c *gin.Context) {
-			order, found := salesFacade.GetSalesOrder(c.Request.Context(), c.Param("id"))
-			if !found {
-				c.JSON(http.StatusNotFound, gin.H{"error": "sales order not found"})
+			order, err := salesFacade.GetSalesOrder(c.Request.Context(), c.Param("id"))
+			if err != nil {
+				respondError(c, err)
 				return
 			}
 			c.JSON(http.StatusOK, order)
@@ -77,12 +102,17 @@ func NewRouter(logger *slog.Logger, salesFacade *sales.Facade, warehousesFacade 
 			c.JSON(http.StatusAccepted, gin.H{"beer_id": beerId})
 		})
 		warehousesRoutes.GET("/availability", func(c *gin.Context) {
-			c.JSON(http.StatusOK, warehousesFacade.GetAvailabilities(c.Request.Context()))
+			availabilities, err := warehousesFacade.GetAvailabilities(c.Request.Context())
+			if err != nil {
+				respondError(c, err)
+				return
+			}
+			c.JSON(http.StatusOK, availabilities)
 		})
 		warehousesRoutes.GET("/availability/:beerId", func(c *gin.Context) {
-			availability, found := warehousesFacade.GetAvailability(c.Request.Context(), c.Param("beerId"))
-			if !found {
-				c.JSON(http.StatusNotFound, gin.H{"error": "availability not found"})
+			availability, err := warehousesFacade.GetAvailability(c.Request.Context(), c.Param("beerId"))
+			if err != nil {
+				respondError(c, err)
 				return
 			}
 			c.JSON(http.StatusOK, availability)
@@ -94,11 +124,14 @@ func NewRouter(logger *slog.Logger, salesFacade *sales.Facade, warehousesFacade 
 
 func respondError(c *gin.Context, err error) {
 	var invalid muflone.ErrInvalid
-	if errors.As(err, &invalid) {
+	switch {
+	case errors.As(err, &invalid):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	case errors.Is(err, muflone.ErrNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 }
 
 func requestLogger(logger *slog.Logger) gin.HandlerFunc {

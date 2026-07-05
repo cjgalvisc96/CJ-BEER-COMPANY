@@ -15,7 +15,19 @@ import (
 // StreamName prefixes the event streams of this aggregate.
 const StreamName = "SalesOrder"
 
-var ErrInvalidSalesOrder = muflone.ErrInvalid("sales order needs a number, a customer, and an order date")
+// AllocationStatus is the order's position in the allocation saga.
+type AllocationStatus string
+
+const (
+	AllocationPending  AllocationStatus = "pending"
+	AllocationDone     AllocationStatus = "allocated"
+	AllocationRejected AllocationStatus = "rejected"
+)
+
+var (
+	ErrInvalidSalesOrder  = muflone.ErrInvalid("sales order needs a number, a customer, and an order date")
+	ErrAllocationConflict = muflone.ErrInvalid("sales order allocation already settled differently")
+)
 
 // SalesOrder is event-sourced: the factory validates the invariants and
 // raises SalesOrderCreated; apply() is the only place state is assigned,
@@ -24,11 +36,14 @@ var ErrInvalidSalesOrder = muflone.ErrInvalid("sales order needs a number, a cus
 type SalesOrder struct {
 	muflone.AggregateRoot
 
+	salesOrderId     sharedkernel.SalesOrderId
 	salesOrderNumber sharedkernel.SalesOrderNumber
 	orderDate        sharedkernel.OrderDate
 	customerId       sharedkernel.CustomerId
 	customerName     sharedkernel.CustomerName
 	rows             []sharedkernel.SalesOrderRowDto
+	allocation       AllocationStatus
+	rejectionReason  string
 }
 
 // NewSalesOrder returns an empty aggregate ready for stream replay — the
@@ -62,19 +77,52 @@ func CreateSalesOrder(
 	return order, nil
 }
 
+// MarkAllocated settles the allocation saga's success. Idempotent: an
+// order already allocated observes nothing new; a rejected order cannot
+// flip to allocated.
+func (s *SalesOrder) MarkAllocated(commitId uuid.UUID) (bool, error) {
+	switch s.allocation {
+	case AllocationDone:
+		return false, nil
+	case AllocationRejected:
+		return false, ErrAllocationConflict
+	}
+	s.RaiseEvent(events.NewSalesOrderAllocated(s.salesOrderId, commitId))
+	return true, nil
+}
+
+// MarkAllocationRejected settles the saga's failure (after compensation).
+func (s *SalesOrder) MarkAllocationRejected(commitId uuid.UUID, reason string) (bool, error) {
+	switch s.allocation {
+	case AllocationRejected:
+		return false, nil
+	case AllocationDone:
+		return false, ErrAllocationConflict
+	}
+	s.RaiseEvent(events.NewSalesOrderAllocationRejected(s.salesOrderId, commitId, reason))
+	return true, nil
+}
+
 // Route dispatches events to the apply methods (RegisteredRoutes.Dispatch).
 func (s *SalesOrder) Route(event muflone.DomainEvent) {
 	switch e := event.(type) {
 	case events.SalesOrderCreated:
 		s.applySalesOrderCreated(e)
+	case events.SalesOrderAllocated:
+		s.allocation = AllocationDone
+	case events.SalesOrderAllocationRejected:
+		s.allocation = AllocationRejected
+		s.rejectionReason = e.Reason
 	}
 }
 
 func (s *SalesOrder) applySalesOrderCreated(event events.SalesOrderCreated) {
 	s.SetID(event.SalesOrderId.Value)
+	s.salesOrderId = event.SalesOrderId
 	s.salesOrderNumber = event.SalesOrderNumber
 	s.orderDate = event.OrderDate
 	s.customerId = event.CustomerId
 	s.customerName = event.CustomerName
 	s.rows = event.Rows
+	s.allocation = AllocationPending
 }

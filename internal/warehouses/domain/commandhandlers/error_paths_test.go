@@ -71,16 +71,21 @@ func TestProductionOrderWithNonPositiveQuantityFailsOnUpdate(t *testing.T) {
 	}.Run(t)
 }
 
-func TestSalesAllocationForUnknownBeerFails(t *testing.T) {
+// TestSalesAllocationForUnknownBeerRecordsQuantityNotFound: a beer the
+// warehouse never stocked refuses with available = 0 — the saga must not
+// hang on a missing aggregate.
+func TestSalesAllocationForUnknownBeerRecordsQuantityNotFound(t *testing.T) {
 	beerId := sharedkernel.BeerId{Value: uuid.New()}
+	correlationId := uuid.New()
+	salesOrderId := uuid.NewString()
 
 	muflone.CommandSpecification[commands.UpdateAvailabilityDueToSalesOrder]{
 		StreamName: domain.StreamName,
 		Given:      func() []muflone.DomainEvent { return nil },
 		When: func() commands.UpdateAvailabilityDueToSalesOrder {
 			return commands.NewUpdateAvailabilityDueToSalesOrder(
-				beerId, uuid.New(), sharedkernel.BeerName{Value: "Ghost Beer"},
-				customtypes.NewQuantity(10, "Lt"),
+				beerId, correlationId, sharedkernel.BeerName{Value: "Ghost Beer"},
+				customtypes.NewQuantity(10, "Lt"), salesOrderId,
 			)
 		},
 		OnHandler: func(store muflone.EventStore) muflone.CommandHandler[commands.UpdateAvailabilityDueToSalesOrder] {
@@ -88,8 +93,14 @@ func TestSalesAllocationForUnknownBeerFails(t *testing.T) {
 				newAvailabilityRepository(store), slog.Default(),
 			)
 		},
-		Expect:        func() []muflone.DomainEvent { return nil },
-		ExpectedError: muflone.ErrAggregateNotFound,
+		Expect: func() []muflone.DomainEvent {
+			return []muflone.DomainEvent{
+				events.NewQuantityNotFound(
+					beerId, correlationId, salesOrderId,
+					customtypes.NewQuantity(10, "Lt"), customtypes.NewQuantity(0, "Lt"),
+				),
+			}
+		},
 	}.Run(t)
 }
 
@@ -109,11 +120,59 @@ func TestSalesAllocationWithNonPositiveQuantityFails(t *testing.T) {
 		},
 		When: func() commands.UpdateAvailabilityDueToSalesOrder {
 			return commands.NewUpdateAvailabilityDueToSalesOrder(
-				beerId, correlationId, beerName, customtypes.NewQuantity(0, "Lt"),
+				beerId, correlationId, beerName, customtypes.NewQuantity(0, "Lt"), uuid.NewString(),
 			)
 		},
 		OnHandler: func(store muflone.EventStore) muflone.CommandHandler[commands.UpdateAvailabilityDueToSalesOrder] {
 			return commandhandlers.NewUpdateAvailabilityDueToSalesOrderCommandHandler(
+				newAvailabilityRepository(store), slog.Default(),
+			)
+		},
+		Expect:        func() []muflone.DomainEvent { return nil },
+		ExpectedError: domain.ErrInvalidQuantity,
+	}.Run(t)
+}
+
+// TestCompensationErrorPaths: compensations validate quantity and surface
+// missing aggregates (they are retried by the bus, never silently lost).
+func TestCompensationErrorPaths(t *testing.T) {
+	beerId := sharedkernel.BeerId{Value: uuid.New()}
+
+	muflone.CommandSpecification[commands.CompensateAvailabilityDueToFailedAllocation]{
+		StreamName: domain.StreamName,
+		Given:      func() []muflone.DomainEvent { return nil },
+		When: func() commands.CompensateAvailabilityDueToFailedAllocation {
+			return commands.NewCompensateAvailabilityDueToFailedAllocation(
+				beerId, uuid.New(), customtypes.NewQuantity(10, "Lt"), uuid.NewString(),
+			)
+		},
+		OnHandler: func(store muflone.EventStore) muflone.CommandHandler[commands.CompensateAvailabilityDueToFailedAllocation] {
+			return commandhandlers.NewCompensateAvailabilityDueToFailedAllocationCommandHandler(
+				newAvailabilityRepository(store), slog.Default(),
+			)
+		},
+		Expect:        func() []muflone.DomainEvent { return nil },
+		ExpectedError: muflone.ErrAggregateNotFound,
+	}.Run(t)
+
+	beerName := sharedkernel.BeerName{Value: "BrewUp IPA"}
+	correlationId := uuid.New()
+	muflone.CommandSpecification[commands.CompensateAvailabilityDueToFailedAllocation]{
+		StreamName: domain.StreamName,
+		Given: func() []muflone.DomainEvent {
+			return []muflone.DomainEvent{
+				events.NewAvailabilityUpdatedDueToProductionOrder(
+					beerId, correlationId, beerName, customtypes.NewQuantity(100, "Lt"),
+				),
+			}
+		},
+		When: func() commands.CompensateAvailabilityDueToFailedAllocation {
+			return commands.NewCompensateAvailabilityDueToFailedAllocation(
+				beerId, correlationId, customtypes.NewQuantity(0, "Lt"), uuid.NewString(),
+			)
+		},
+		OnHandler: func(store muflone.EventStore) muflone.CommandHandler[commands.CompensateAvailabilityDueToFailedAllocation] {
+			return commandhandlers.NewCompensateAvailabilityDueToFailedAllocationCommandHandler(
 				newAvailabilityRepository(store), slog.Default(),
 			)
 		},
@@ -143,6 +202,20 @@ func TestProductionOrderSurfacesStoreFailures(t *testing.T) {
 	err := handler.Handle(context.Background(), commands.NewUpdateAvailabilityDueToProductionOrder(
 		sharedkernel.BeerId{Value: uuid.New()}, uuid.New(),
 		sharedkernel.BeerName{Value: "BrewUp IPA"}, customtypes.NewQuantity(10, "Lt"),
+	))
+
+	assert.ErrorIs(t, err, storeErr)
+}
+
+func TestSalesAllocationSurfacesStoreFailures(t *testing.T) {
+	storeErr := errors.New("event store down")
+	handler := commandhandlers.NewUpdateAvailabilityDueToSalesOrderCommandHandler(
+		&failingRepository{err: storeErr}, slog.Default(),
+	)
+
+	err := handler.Handle(context.Background(), commands.NewUpdateAvailabilityDueToSalesOrder(
+		sharedkernel.BeerId{Value: uuid.New()}, uuid.New(),
+		sharedkernel.BeerName{Value: "BrewUp IPA"}, customtypes.NewQuantity(10, "Lt"), uuid.NewString(),
 	))
 
 	assert.ErrorIs(t, err, storeErr)

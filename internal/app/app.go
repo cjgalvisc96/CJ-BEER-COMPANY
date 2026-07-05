@@ -16,6 +16,7 @@ import (
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/config"
+	"github.com/cjgalvisc96/cj-beer-company/internal/platform/database"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/logging"
 	"github.com/cjgalvisc96/cj-beer-company/internal/rest"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales"
@@ -40,6 +41,20 @@ func New(cfg config.Config) (*App, error) {
 	do.ProvideValue(injector, cfg)
 	do.ProvideValue(injector, logger)
 
+	// Durable mode: one shared Postgres pool, fail fast if unreachable.
+	var ready rest.ReadinessCheck
+	if cfg.DBURL != "" {
+		db, err := database.Open(cfg.DBURL)
+		if err != nil {
+			return nil, err
+		}
+		do.ProvideValue(injector, db)
+		ready = db.PingContext
+		logger.Info("persistence.durable", slog.String("driver", "postgres"))
+	} else {
+		logger.Info("persistence.in_memory")
+	}
+
 	bus := muflone.NewServiceBus(logger)
 
 	sales.Register(injector, bus)
@@ -49,6 +64,7 @@ func New(cfg config.Config) (*App, error) {
 		logger,
 		do.MustInvoke[*sales.Facade](injector),
 		do.MustInvoke[*warehouses.Facade](injector),
+		ready,
 	)
 
 	return &App{Injector: injector, cfg: cfg, logger: logger, bus: bus, engine: engine}, nil

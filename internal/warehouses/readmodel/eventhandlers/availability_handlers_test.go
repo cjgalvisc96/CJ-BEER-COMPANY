@@ -30,7 +30,16 @@ func TestProjectorSurfacesWriterFailure(t *testing.T) {
 		uuid.New(),
 		sharedkernel.BeerName{Value: "BrewUp IPA"},
 		customtypes.NewQuantity(70, "Lt"),
+		uuid.NewString(),
 	))
+	assert.ErrorIs(t, err, writeErr)
 
+	err = projector.OnAvailabilityCompensated(context.Background(), events.NewAvailabilityCompensated(
+		sharedkernel.BeerId{Value: uuid.New()},
+		uuid.New(),
+		sharedkernel.BeerName{Value: "BrewUp IPA"},
+		customtypes.NewQuantity(100, "Lt"),
+		uuid.NewString(),
+	))
 	assert.ErrorIs(t, err, writeErr)
 }

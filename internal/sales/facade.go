@@ -10,7 +10,6 @@ import (
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/dtos"
-	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/services"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/sharedkernel"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/sharedkernel/commands"
 	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
@@ -33,14 +32,21 @@ type SalesOrderRowJson struct {
 	Price    customtypes.Price    `json:"price"`
 }
 
+// SalesOrderQueries is the read-side port of the facade; the in-memory
+// and Postgres read-model services both implement it.
+type SalesOrderQueries interface {
+	GetSalesOrder(ctx context.Context, id string) (dtos.SalesOrder, error)
+	GetSalesOrders(ctx context.Context) ([]dtos.SalesOrder, error)
+}
+
 // Facade is the module's public surface (the book's ISalesFacade): the
 // REST layer talks only to facades, never to a module's internals.
 type Facade struct {
 	bus     *muflone.ServiceBus
-	queries *services.SalesOrderService
+	queries SalesOrderQueries
 }
 
-func NewFacade(bus *muflone.ServiceBus, queries *services.SalesOrderService) *Facade {
+func NewFacade(bus *muflone.ServiceBus, queries SalesOrderQueries) *Facade {
 	return &Facade{bus: bus, queries: queries}
 }
 
@@ -87,10 +93,10 @@ func (f *Facade) CreateSalesOrder(ctx context.Context, body SalesOrderJson) (str
 	return salesOrderId.Value.String(), nil
 }
 
-func (f *Facade) GetSalesOrder(ctx context.Context, id string) (dtos.SalesOrder, bool) {
+func (f *Facade) GetSalesOrder(ctx context.Context, id string) (dtos.SalesOrder, error) {
 	return f.queries.GetSalesOrder(ctx, id)
 }
 
-func (f *Facade) GetSalesOrders(ctx context.Context) []dtos.SalesOrder {
+func (f *Facade) GetSalesOrders(ctx context.Context) ([]dtos.SalesOrder, error) {
 	return f.queries.GetSalesOrders(ctx)
 }

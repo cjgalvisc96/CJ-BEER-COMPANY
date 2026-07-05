@@ -123,6 +123,8 @@ func TestSharedCustomTypesStayLeaf(t *testing.T) {
 //	domain        → sharedkernel; never readmodel or the facade
 //	readmodel     → sharedkernel (events to project); never domain
 //	integration   → sharedkernel commands + bus; never domain or readmodel
+//	sagas         → domain + sharedkernel (it drives saga aggregates and
+//	                sends commands); never the read model
 func TestModuleLayeringIsCompliant(t *testing.T) {
 	for _, module := range []string{"sales", "warehouses"} {
 		base := modulePath + "/internal/" + module
@@ -131,21 +133,29 @@ func TestModuleLayeringIsCompliant(t *testing.T) {
 			base + "/domain",
 			base + "/readmodel",
 			base + "/integration",
+			base + "/sagas",
 		})
 		assertNoDependencyOn(t, "../internal/"+module+"/domain", []string{
 			base + "/readmodel",
 			base + "/integration",
+			base + "/sagas",
 		})
 		assertNoDependencyOn(t, "../internal/"+module+"/readmodel", []string{
 			base + "/domain",
 			base + "/integration",
+			base + "/sagas",
 		})
 	}
 
-	// warehouses/integration reacts by SENDING COMMANDS, never by touching
-	// the write or read model directly.
-	assertNoDependencyOn(t, "../internal/warehouses/integration", []string{
-		modulePath + "/internal/warehouses/domain",
+	// sales/integration reacts by SENDING COMMANDS, never by touching the
+	// write or read model directly.
+	assertNoDependencyOn(t, "../internal/sales/integration", []string{
+		modulePath + "/internal/sales/domain",
+		modulePath + "/internal/sales/readmodel",
+	})
+	// The warehouse saga coordinates through its event-sourced saga
+	// aggregate and commands; the read model is out of bounds.
+	assertNoDependencyOn(t, "../internal/warehouses/sagas", []string{
 		modulePath + "/internal/warehouses/readmodel",
 	})
 }

@@ -1,10 +1,9 @@
 // Package domain holds the Warehouses write model: the event-sourced
-// Availability aggregate (one per beer) — BrewUp.Warehouses.Domain.
+// Availability aggregate (one per beer) and the event-sourced
+// OrderAllocationSaga — BrewUp.Warehouses.Domain.
 package domain
 
 import (
-	"fmt"
-
 	"github.com/google/uuid"
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
@@ -15,10 +14,7 @@ import (
 
 const StreamName = "Availability"
 
-var (
-	ErrInvalidQuantity = muflone.ErrInvalid("quantity must be positive")
-	ErrNotEnoughStock  = muflone.ErrInvalid("not enough beer available")
-)
+var ErrInvalidQuantity = muflone.ErrInvalid("quantity must be positive")
 
 // Availability tracks how much of one beer the warehouse can sell. Its
 // events carry the NEW cumulative quantity, matching the book's
@@ -73,18 +69,57 @@ func (a *Availability) UpdateDueToProductionOrder(
 	return nil
 }
 
-// UpdateDueToSalesOrder allocates stock to a sales order; the raised
-// BeerAvailabilityUpdated carries the remaining quantity.
-func (a *Availability) UpdateDueToSalesOrder(commitId uuid.UUID, quantity customtypes.Quantity) error {
+// UpdateDueToSalesOrder is one saga step: allocate stock to a sales order.
+// A shortage is not an error — it is the book's QuantityNotFound event
+// (Ch. 12, Figure 12.3), recorded in the stream so the saga can react.
+func (a *Availability) UpdateDueToSalesOrder(
+	commitId uuid.UUID,
+	quantity customtypes.Quantity,
+	salesOrderId string,
+) error {
 	if quantity.Value <= 0 {
 		return ErrInvalidQuantity
 	}
 	if quantity.Value > a.quantity.Value {
-		return fmt.Errorf("%w: %s has %d, requested %d",
-			ErrNotEnoughStock, a.beerName.Value, a.quantity.Value, quantity.Value)
+		a.RaiseEvent(events.NewQuantityNotFound(
+			a.beerId, commitId, salesOrderId, quantity, a.quantity,
+		))
+		return nil
 	}
 	remaining := customtypes.NewQuantity(a.quantity.Value-quantity.Value, a.quantity.UnitOfMeasure)
-	a.RaiseEvent(events.NewBeerAvailabilityUpdated(a.beerId, commitId, a.beerName, remaining))
+	a.RaiseEvent(events.NewBeerAvailabilityUpdated(a.beerId, commitId, a.beerName, remaining, salesOrderId))
+	return nil
+}
+
+// RefuseUnknownBeer records QuantityNotFound for a beer the warehouse has
+// never stocked: available is zero by definition, and the refusal must
+// still land in the beer's stream so the saga can react.
+func RefuseUnknownBeer(
+	beerId sharedkernel.BeerId,
+	commitId uuid.UUID,
+	requested customtypes.Quantity,
+	salesOrderId string,
+) *Availability {
+	availability := NewAvailability()
+	availability.RaiseEvent(events.NewQuantityNotFound(
+		beerId, commitId, salesOrderId, requested,
+		customtypes.NewQuantity(0, requested.UnitOfMeasure),
+	))
+	return availability
+}
+
+// CompensateDueToFailedAllocation is the compensating transaction (book
+// Ch. 12, backward recovery): give an allocated quantity back.
+func (a *Availability) CompensateDueToFailedAllocation(
+	commitId uuid.UUID,
+	quantity customtypes.Quantity,
+	salesOrderId string,
+) error {
+	if quantity.Value <= 0 {
+		return ErrInvalidQuantity
+	}
+	newTotal := customtypes.NewQuantity(a.quantity.Value+quantity.Value, a.quantity.UnitOfMeasure)
+	a.RaiseEvent(events.NewAvailabilityCompensated(a.beerId, commitId, a.beerName, newTotal, salesOrderId))
 	return nil
 }
 
@@ -95,6 +130,13 @@ func (a *Availability) Route(event muflone.DomainEvent) {
 		a.applyAvailabilityUpdated(e.BeerId, e.BeerName, e.Quantity)
 	case events.BeerAvailabilityUpdated:
 		a.applyAvailabilityUpdated(e.BeerId, e.BeerName, e.Quantity)
+	case events.AvailabilityCompensated:
+		a.applyAvailabilityUpdated(e.BeerId, e.BeerName, e.Quantity)
+	case events.QuantityNotFound:
+		// A refusal changes no quantity; it only anchors the stream id.
+		s := e.BeerId
+		a.SetID(s.Value)
+		a.beerId = s
 	}
 }
 

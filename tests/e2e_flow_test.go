@@ -162,9 +162,23 @@ func TestSalesOrderAllocatesWarehouseStock(t *testing.T) {
 	})
 }
 
-// TestOversizedOrderLeavesAvailabilityUntouched: the warehouse refuses the
-// allocation, availability stays as produced.
-func TestOversizedOrderLeavesAvailabilityUntouched(t *testing.T) {
+// allocationStatusOf reads the order's saga outcome from the read model.
+func (c *testClient) allocationStatusOf(orderId string) string {
+	status, body := c.do(http.MethodGet, "/v1/sales/"+orderId, nil)
+	if status != http.StatusOK {
+		return ""
+	}
+	var order struct {
+		AllocationStatus string `json:"allocation_status"`
+	}
+	require.NoError(c.t, json.Unmarshal(body, &order))
+	return order.AllocationStatus
+}
+
+// TestOversizedOrderIsRejectedAndAvailabilityUntouched: the warehouse
+// records QuantityNotFound (book Ch. 12, Fig. 12.3), the saga rejects the
+// order with nothing to compensate, and Sales settles the order status.
+func TestOversizedOrderIsRejectedAndAvailabilityUntouched(t *testing.T) {
 	client := newTestClient(t)
 	beerId := uuid.NewString()
 
@@ -174,7 +188,7 @@ func TestOversizedOrderLeavesAvailabilityUntouched(t *testing.T) {
 		return ok && quantity == 10
 	})
 
-	status, _ := client.do(http.MethodPost, "/v1/sales", map[string]any{
+	status, body := client.do(http.MethodPost, "/v1/sales", map[string]any{
 		"sales_order_number": "20240315-1502",
 		"customer_name":      "Thirsty Pub",
 		"rows": []map[string]any{{
@@ -185,12 +199,105 @@ func TestOversizedOrderLeavesAvailabilityUntouched(t *testing.T) {
 		}},
 	})
 	require.Equal(t, http.StatusCreated, status, "the order itself is accepted; allocation is refused downstream")
+	var created struct {
+		Id string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(body, &created))
 
-	// Give the choreography time to settle, then confirm nothing changed.
-	time.Sleep(300 * time.Millisecond)
+	client.eventually(func() bool {
+		return client.allocationStatusOf(created.Id) == "rejected"
+	})
 	quantity, ok := client.availabilityOf(beerId)
 	require.True(t, ok)
 	assert.Equal(t, 10, quantity)
+}
+
+// TestPartialAllocationFailureIsCompensated is the heart of Chapter 12:
+// a two-row order allocates the first beer, fails on the second, and the
+// saga's compensating transaction gives the first beer's stock back —
+// backward recovery, leaving the system consistent.
+func TestPartialAllocationFailureIsCompensated(t *testing.T) {
+	client := newTestClient(t)
+	plentyBeer := uuid.NewString()
+	scarceBeer := uuid.NewString()
+
+	client.produceBeer(plentyBeer, "Plenty Lager", 100)
+	client.produceBeer(scarceBeer, "Scarce Stout", 5)
+	client.eventually(func() bool {
+		plenty, okPlenty := client.availabilityOf(plentyBeer)
+		scarce, okScarce := client.availabilityOf(scarceBeer)
+		return okPlenty && okScarce && plenty == 100 && scarce == 5
+	})
+
+	status, body := client.do(http.MethodPost, "/v1/sales", map[string]any{
+		"sales_order_number": "20240315-1503",
+		"customer_name":      "Greedy Pub",
+		"rows": []map[string]any{
+			{
+				"beer_id":   plentyBeer,
+				"beer_name": "Plenty Lager",
+				"quantity":  map[string]any{"value": 30, "unit_of_measure": "Lt"},
+				"price":     map[string]any{"value": 4, "currency": "EUR"},
+			},
+			{
+				"beer_id":   scarceBeer,
+				"beer_name": "Scarce Stout",
+				"quantity":  map[string]any{"value": 50, "unit_of_measure": "Lt"},
+				"price":     map[string]any{"value": 6, "currency": "EUR"},
+			},
+		},
+	})
+	require.Equal(t, http.StatusCreated, status)
+	var created struct {
+		Id string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(body, &created))
+
+	// The saga rejects the order...
+	client.eventually(func() bool {
+		return client.allocationStatusOf(created.Id) == "rejected"
+	})
+	// ...and the compensating transaction restored the first beer's stock.
+	client.eventually(func() bool {
+		quantity, _ := client.availabilityOf(plentyBeer)
+		return quantity == 100
+	})
+	scarce, _ := client.availabilityOf(scarceBeer)
+	assert.Equal(t, 5, scarce, "the failed row never held stock")
+}
+
+// TestHappyOrderSettlesAsAllocated: the saga completes and Sales marks the
+// order allocated.
+func TestHappyOrderSettlesAsAllocated(t *testing.T) {
+	client := newTestClient(t)
+	beerId := uuid.NewString()
+
+	client.produceBeer(beerId, "BrewUp IPA", 100)
+	client.eventually(func() bool {
+		quantity, ok := client.availabilityOf(beerId)
+		return ok && quantity == 100
+	})
+
+	_, body := client.do(http.MethodPost, "/v1/sales", map[string]any{
+		"sales_order_number": "20240315-1504",
+		"customer_name":      "Happy Bar",
+		"rows": []map[string]any{{
+			"beer_id":   beerId,
+			"beer_name": "BrewUp IPA",
+			"quantity":  map[string]any{"value": 30, "unit_of_measure": "Lt"},
+			"price":     map[string]any{"value": 5, "currency": "EUR"},
+		}},
+	})
+	var created struct {
+		Id string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(body, &created))
+
+	client.eventually(func() bool {
+		return client.allocationStatusOf(created.Id) == "allocated"
+	})
+	quantity, _ := client.availabilityOf(beerId)
+	assert.Equal(t, 70, quantity)
 }
 
 // TestProductionOrdersAccumulate mirrors the cumulative semantics of the
