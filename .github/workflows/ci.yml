@@ -1,0 +1,270 @@
+# CI — the book's Chapter 9 (DDD Patterns for Continuous Integration)
+# applied end to end. The pipeline is the same gate developers run locally
+# (task lint / test:race / cover), extended with static analysis,
+# vulnerability scanning, migration verification against a real Postgres,
+# a full compose smoke test of the event choreography, and the production
+# image (built, scanned, and pushed to GHCR outside pull requests).
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/cj-beer-company
+
+jobs:
+  lint:
+    name: Lint & static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dependencies are tidy
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+      - name: gofmt + go vet
+        run: task lint
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+  architecture:
+    name: Architecture fitness functions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The NetArchTest equivalent (book Ch. 6): module isolation
+      # (Sales ⊥ Warehouses), REST-through-facades-only, muflone stays
+      # generic, and the per-module SharedKernel/Domain/ReadModel layering.
+      - name: Verify module boundaries and layering
+        run: task check:architecture
+
+  test:
+    name: Tests (race) + 100% coverage gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Specification tests (Given/When/Expect), e2e tests, and the
+      # architecture fitness functions all run here.
+      - name: Tests under the race detector
+        run: task test:race
+
+      - name: Coverage gate — 100% unit coverage (internal/app exempt)
+        run: task cover
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  vulnerabilities:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Scan for vulnerabilities reachable from our code
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  migrations:
+    name: Migrations (Atlas) against Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: beer
+          POSTGRES_PASSWORD: beerpassword
+          POSTGRES_DB: beer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U beer -d beer"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify atlas.sum integrity
+        run: |
+          docker run --rm -v "$PWD/migrations/versions:/versions" \
+            arigaio/atlas migrate hash --dir file:///versions
+          git diff --exit-code migrations/versions/atlas.sum
+
+      - name: Apply migrations to a fresh database
+        run: |
+          docker run --rm --network host -v "$PWD/migrations:/migrations" \
+            arigaio/atlas migrate apply --dir file:///migrations/versions \
+            --url "postgres://beer:beerpassword@localhost:5432/beer?sslmode=disable"
+
+      - name: Migration status is clean
+        run: |
+          docker run --rm --network host -v "$PWD/migrations:/migrations" \
+            arigaio/atlas migrate status --dir file:///migrations/versions \
+            --url "postgres://beer:beerpassword@localhost:5432/beer?sslmode=disable"
+
+  e2e-smoke:
+    name: Compose smoke test (full event flow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bring up the stack (postgres → migrate → api → seed)
+        run: docker compose up --build -d
+
+      - name: Wait for the API
+        run: |
+          for _ in $(seq 1 60); do
+            curl -sf localhost:8080/healthz && exit 0
+            sleep 2
+          done
+          echo "API never became healthy" && exit 1
+
+      - name: Exercise the choreography (production → order → allocation)
+        run: |
+          set -euo pipefail
+          BEER=99999999-9999-9999-9999-999999999999
+
+          curl -sf localhost:8080/v1/warehouses/availability \
+            -H 'Content-Type: application/json' \
+            -d "{\"beer_id\":\"$BEER\",\"beer_name\":\"CI Pale Ale\",\"quantity\":{\"value\":100,\"unit_of_measure\":\"Lt\"}}"
+          sleep 2
+          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" | jq -r .quantity.value)" = "100"
+
+          ORDER=$(curl -sf localhost:8080/v1/sales \
+            -H 'Content-Type: application/json' \
+            -d "{\"sales_order_number\":\"ci-0001\",\"customer_name\":\"CI Bot\",\"rows\":[{\"beer_id\":\"$BEER\",\"beer_name\":\"CI Pale Ale\",\"quantity\":{\"value\":30,\"unit_of_measure\":\"Lt\"},\"price\":{\"value\":5,\"currency\":\"EUR\"}}]}" \
+            | jq -r .id)
+          sleep 2
+
+          test "$(curl -sf "localhost:8080/v1/sales/$ORDER" | jq -r .sales_order_number)" = "ci-0001"
+          test "$(curl -sf "localhost:8080/v1/warehouses/availability/$BEER" | jq -r .quantity.value)" = "70"
+          echo "choreography OK: 100 Lt produced, 30 Lt allocated, 70 Lt left"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  image:
+    name: Build, scan & publish image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint, architecture, test, vulnerabilities, migrations, e2e-smoke]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Image metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image (Trivy — fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

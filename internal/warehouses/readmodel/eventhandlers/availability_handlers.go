@@ -8,19 +8,24 @@ import (
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/dtos"
-	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/services"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/sharedkernel/events"
 )
+
+// availabilityWriter is the slice of the read-model service this
+// projection needs (the book's IAvailabilityService).
+type availabilityWriter interface {
+	UpsertAvailability(ctx context.Context, availability dtos.Availability) error
+}
 
 // AvailabilityProjector projects both availability events into the read
 // model; each event carries the new cumulative quantity, so projecting is
 // a plain upsert.
 type AvailabilityProjector struct {
-	service *services.AvailabilityService
+	service availabilityWriter
 	logger  *slog.Logger
 }
 
-func NewAvailabilityProjector(service *services.AvailabilityService, logger *slog.Logger) *AvailabilityProjector {
+func NewAvailabilityProjector(service availabilityWriter, logger *slog.Logger) *AvailabilityProjector {
 	return &AvailabilityProjector{service: service, logger: logger}
 }
 

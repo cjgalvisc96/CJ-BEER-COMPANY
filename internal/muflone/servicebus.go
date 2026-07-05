@@ -3,6 +3,7 @@ package muflone
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -36,17 +37,16 @@ type ServiceBus struct {
 	logger *slog.Logger
 }
 
-func NewServiceBus(logger *slog.Logger) (*ServiceBus, error) {
+func NewServiceBus(logger *slog.Logger) *ServiceBus {
 	wmLogger := watermill.NewSlogLogger(logger)
-	router, err := message.NewRouter(message.RouterConfig{}, wmLogger)
-	if err != nil {
-		return nil, err
-	}
+	// NewRouter only errors on an invalid config; the zero RouterConfig is
+	// always valid, so the error is unreachable here.
+	router, _ := message.NewRouter(message.RouterConfig{}, wmLogger)
 	return &ServiceBus{
 		pubSub: gochannel.NewGoChannel(gochannel.Config{}, wmLogger),
 		router: router,
 		logger: logger,
-	}, nil
+	}
 }
 
 // Send dispatches a command to its handler (fire-and-forget).
@@ -113,7 +113,7 @@ func (b *ServiceBus) SubscribeIntegrationEvent(name, messageName string, handler
 }
 
 func (b *ServiceBus) subscribe(name, topic string, handler message.NoPublishHandlerFunc) {
-	b.router.AddNoPublisherHandler(name, topic, b.pubSub, handler)
+	b.router.AddConsumerHandler(name, topic, b.pubSub, handler)
 }
 
 // Run starts routing messages and blocks until ctx is cancelled. Running()
@@ -127,8 +127,5 @@ func (b *ServiceBus) Running() <-chan struct{} {
 }
 
 func (b *ServiceBus) Close() error {
-	if err := b.router.Close(); err != nil {
-		return err
-	}
-	return b.pubSub.Close()
+	return errors.Join(b.router.Close(), b.pubSub.Close())
 }

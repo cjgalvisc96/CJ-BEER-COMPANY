@@ -40,10 +40,7 @@ func New(cfg config.Config) (*App, error) {
 	do.ProvideValue(injector, cfg)
 	do.ProvideValue(injector, logger)
 
-	bus, err := muflone.NewServiceBus(logger)
-	if err != nil {
-		return nil, fmt.Errorf("create service bus: %w", err)
-	}
+	bus := muflone.NewServiceBus(logger)
 
 	sales.Register(injector, bus)
 	warehouses.Register(injector, bus)

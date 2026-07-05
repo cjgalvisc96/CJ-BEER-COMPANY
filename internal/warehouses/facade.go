@@ -18,7 +18,7 @@ import (
 // ProductionOrderJson is the inbound payload declaring a finished
 // production order for a beer.
 type ProductionOrderJson struct {
-	BeerId   string               `json:"beer_id" binding:"required,uuid"`
+	BeerId   string               `json:"beer_id" binding:"required"`
 	BeerName string               `json:"beer_name" binding:"required"`
 	Quantity customtypes.Quantity `json:"quantity"`
 }

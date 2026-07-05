@@ -36,10 +36,14 @@ tasks:
       - go test -race ./...
 
   cover:
-    desc: Run tests with coverage report
+    desc: "Coverage gate: 100% unit coverage on internal packages (app exempt)"
     cmds:
-      - go test -coverprofile=coverage.out ./...
-      - go tool cover -func=coverage.out | tail -1
+      - ./scripts/coverage_gate.sh
+
+  check:architecture:
+    desc: "Architecture fitness functions: module isolation + layering (book Ch. 6)"
+    cmds:
+      - go test ./tests/ -run 'TestShould|TestMuflone|TestShared|TestModuleLayering' -v
 
   lint:
     desc: Vet and check formatting

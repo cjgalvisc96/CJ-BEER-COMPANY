@@ -27,7 +27,7 @@ type SalesOrderJson struct {
 }
 
 type SalesOrderRowJson struct {
-	BeerId   string               `json:"beer_id" binding:"required,uuid"`
+	BeerId   string               `json:"beer_id" binding:"required"`
 	BeerName string               `json:"beer_name" binding:"required"`
 	Quantity customtypes.Quantity `json:"quantity"`
 	Price    customtypes.Price    `json:"price"`

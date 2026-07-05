@@ -3,10 +3,11 @@
 Run the full pre-merge gate, in order, stopping at the first failure:
 
 ```bash
-task tidy        # go.mod/go.sum in sync (fails CI if dirty)
-task lint        # go vet + gofmt check
-task test:race   # all tests under the race detector
-task cover       # report total coverage (keep it moving up, not down)
+task tidy                # go.mod/go.sum in sync (fails CI if dirty)
+task lint                # go vet + gofmt check
+task check:architecture  # fitness functions: module isolation + layering
+task test:race           # all tests under the race detector
+task cover               # HARD GATE: 100% unit coverage (internal/app exempt)
 ```
 
 Then verify the migrations are internally consistent if `migrations/` was

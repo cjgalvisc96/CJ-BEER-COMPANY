@@ -1,7 +1,9 @@
 // Architecture fitness functions — the Go rendition of the book's
 // NetArchTest examples (Chapter 6, "Testing and stabilizing"): automated
-// tests that fail when a module grows a dependency it must not have, so
+// tests that fail when a package grows a dependency it must not have, so
 // the modular structure survives as the system evolves.
+//
+// Run on their own with `task check:architecture`.
 package tests
 
 import (
@@ -18,8 +20,8 @@ import (
 
 const modulePath = "github.com/cjgalvisc96/cj-beer-company"
 
-// importsOf returns package-dir → imported paths for every non-test Go
-// file under root.
+// importsOf returns file → imported paths for every non-test Go file
+// under root.
 func importsOf(t *testing.T, root string) map[string][]string {
 	t.Helper()
 	imports := make(map[string][]string)
@@ -48,19 +50,23 @@ func assertNoDependencyOn(t *testing.T, root string, forbidden []string) {
 	for file, imported := range importsOf(t, root) {
 		for _, importPath := range imported {
 			for _, banned := range forbidden {
-				assert.False(t, strings.HasPrefix(importPath, banned),
-					"%s depends on %s — forbidden for this module", file, importPath)
+				assert.False(t, importPath == banned || strings.HasPrefix(importPath, banned+"/"),
+					"%s depends on %s — forbidden for this package", file, importPath)
 			}
 		}
 	}
 }
 
+// --- module isolation (the book's Should_*Architecture_BeCompliant) ---------
+
 // TestShouldSalesArchitectureBeCompliant mirrors
 // Should_SalesArchitecture_BeCompliant: the Sales module must not depend
-// on any Warehouses project.
+// on any Warehouses project (and never on the composition root).
 func TestShouldSalesArchitectureBeCompliant(t *testing.T) {
 	assertNoDependencyOn(t, "../internal/sales", []string{
 		modulePath + "/internal/warehouses",
+		modulePath + "/internal/app",
+		modulePath + "/internal/rest",
 	})
 }
 
@@ -69,6 +75,8 @@ func TestShouldSalesArchitectureBeCompliant(t *testing.T) {
 func TestShouldWarehousesArchitectureBeCompliant(t *testing.T) {
 	assertNoDependencyOn(t, "../internal/warehouses", []string{
 		modulePath + "/internal/sales",
+		modulePath + "/internal/app",
+		modulePath + "/internal/rest",
 	})
 }
 
@@ -94,5 +102,50 @@ func TestMufloneStaysGeneric(t *testing.T) {
 		modulePath + "/internal/sales",
 		modulePath + "/internal/warehouses",
 		modulePath + "/internal/rest",
+		modulePath + "/internal/app",
+		modulePath + "/internal/shared",
+	})
+}
+
+// TestSharedCustomTypesStayLeaf: the shared custom types are a leaf — they
+// depend on nothing inside the repo.
+func TestSharedCustomTypesStayLeaf(t *testing.T) {
+	assertNoDependencyOn(t, "../internal/shared", []string{
+		modulePath + "/internal",
+	})
+}
+
+// --- intra-module layering (the book's project split, per module) -----------
+
+// The BrewUp project layout implies a direction between a module's parts:
+//
+//	sharedkernel  → (muflone, shared) only — it IS the published language
+//	domain        → sharedkernel; never readmodel or the facade
+//	readmodel     → sharedkernel (events to project); never domain
+//	integration   → sharedkernel commands + bus; never domain or readmodel
+func TestModuleLayeringIsCompliant(t *testing.T) {
+	for _, module := range []string{"sales", "warehouses"} {
+		base := modulePath + "/internal/" + module
+
+		assertNoDependencyOn(t, "../internal/"+module+"/sharedkernel", []string{
+			base + "/domain",
+			base + "/readmodel",
+			base + "/integration",
+		})
+		assertNoDependencyOn(t, "../internal/"+module+"/domain", []string{
+			base + "/readmodel",
+			base + "/integration",
+		})
+		assertNoDependencyOn(t, "../internal/"+module+"/readmodel", []string{
+			base + "/domain",
+			base + "/integration",
+		})
+	}
+
+	// warehouses/integration reacts by SENDING COMMANDS, never by touching
+	// the write or read model directly.
+	assertNoDependencyOn(t, "../internal/warehouses/integration", []string{
+		modulePath + "/internal/warehouses/domain",
+		modulePath + "/internal/warehouses/readmodel",
 	})
 }

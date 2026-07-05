@@ -25,8 +25,21 @@ Requires [Task](https://taskfile.dev):
 task run          # zero-dependency: serve on :8080, everything in memory
 task test         # specification + e2e + architecture fitness tests
 task test:race    # same, under the race detector
+task cover        # HARD GATE: 100% unit coverage (internal/app exempt)
 task docker:up    # postgres → atlas migrate → api → seeded demo data
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same gate on every push/PR, in
+seven jobs: **lint** (gofmt, vet, staticcheck, tidy check),
+**architecture** (`task check:architecture` — the fitness functions:
+Sales ⊥ Warehouses, REST-through-facades-only, muflone stays generic,
+per-module SharedKernel/Domain/ReadModel layering), **test** (race
+detector + the 100% coverage gate, coverage artifact), **vulnerabilities**
+(govulncheck), **migrations** (`atlas.sum` integrity + real apply against
+a Postgres service), **e2e-smoke** (the full compose stack exercising the
+production → order → allocation choreography), and **image** (buildx +
+Trivy scan; pushed to GHCR with sha/semver/latest tags outside PRs).
+Dependabot keeps modules, actions, and base images fresh.
 
 ### Try the flow (the book's Figure 4.2)
 
@@ -100,6 +113,10 @@ modules to add (see `docs/architecture/events.md`).
   eventual-consistency polling.
 - **Fitness functions** — imports are parsed and asserted: Sales ⊥
   Warehouses, REST → facades only, muflone stays generic.
+- **100% unit coverage, enforced** — `task cover` fails if any internal
+  package drops below 100% (error branches are made reachable with fakes;
+  only the `internal/app` composition root is exempt, and it is
+  smoke-tested).
 
 > **Why `internal/` and not `src/`?** In Go the layout *is* the import
 > path: packages under `internal/` are un-importable from any other module

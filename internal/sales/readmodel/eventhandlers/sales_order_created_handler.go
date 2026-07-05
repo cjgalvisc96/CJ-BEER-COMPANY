@@ -8,18 +8,23 @@ import (
 	"log/slog"
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/dtos"
-	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/services"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/sharedkernel/events"
 )
+
+// salesOrderWriter is the slice of the read-model service this projection
+// needs (the book's ISalesOrderService).
+type salesOrderWriter interface {
+	CreateSalesOrder(ctx context.Context, order dtos.SalesOrder) error
+}
 
 // SalesOrderCreatedEventHandler projects the new order into the read model
 // (the book's SalesOrderCreatedEventHandlerAsync).
 type SalesOrderCreatedEventHandler struct {
-	service *services.SalesOrderService
+	service salesOrderWriter
 	logger  *slog.Logger
 }
 
-func NewSalesOrderCreatedEventHandler(service *services.SalesOrderService, logger *slog.Logger) *SalesOrderCreatedEventHandler {
+func NewSalesOrderCreatedEventHandler(service salesOrderWriter, logger *slog.Logger) *SalesOrderCreatedEventHandler {
 	return &SalesOrderCreatedEventHandler{service: service, logger: logger}
 }
 
