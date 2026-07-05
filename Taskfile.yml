@@ -1,0 +1,108 @@
+version: "3"
+
+dotenv: [".env"]
+
+vars:
+  ATLAS_IMAGE: arigaio/atlas
+  DB_URL_DEFAULT: postgres://beer:beerpassword@localhost:5432/beer?sslmode=disable
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  run:
+    desc: Run the API locally
+    cmds:
+      - go run ./cmd/api
+
+  build:
+    desc: Build the API binary into ./bin
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -o bin/api ./cmd/api
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run all tests with the race detector
+    cmds:
+      - go test -race ./...
+
+  cover:
+    desc: Run tests with coverage report
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out | tail -1
+
+  lint:
+    desc: Vet and check formatting
+    cmds:
+      - go vet ./...
+      - |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "gofmt needed on:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+  fmt:
+    desc: Format all Go files
+    cmds:
+      - gofmt -w .
+
+  tidy:
+    desc: Sync go.mod / go.sum
+    cmds:
+      - go mod tidy
+
+  docker:build:
+    desc: Build the Docker image
+    cmds:
+      - docker build -t cj-beer-company:latest .
+
+  docker:up:
+    desc: "Ordered bring-up: postgres → atlas migrate → api → seed"
+    cmds:
+      - docker compose up --build -d
+      - docker compose logs seed --no-log-prefix -f
+
+  docker:down:
+    desc: Stop the compose stack (add -- -v to drop the database volume)
+    cmds:
+      - docker compose down {{.CLI_ARGS}}
+
+  migrate:apply:
+    desc: Apply pending migrations (needs postgres up; DB_URL from .env or default)
+    cmds:
+      - >-
+        docker run --rm --network host -v {{.TASKFILE_DIR}}/migrations:/migrations
+        {{.ATLAS_IMAGE}} migrate apply --dir file:///migrations/versions
+        --url "{{.DB_URL | default .DB_URL_DEFAULT}}"
+
+  migrate:status:
+    desc: Show migration status against the database
+    cmds:
+      - >-
+        docker run --rm --network host -v {{.TASKFILE_DIR}}/migrations:/migrations
+        {{.ATLAS_IMAGE}} migrate status --dir file:///migrations/versions
+        --url "{{.DB_URL | default .DB_URL_DEFAULT}}"
+
+  migrate:hash:
+    desc: Recompute migrations/versions/atlas.sum after adding/editing migrations
+    cmds:
+      - >-
+        docker run --rm -v {{.TASKFILE_DIR}}/migrations/versions:/versions
+        {{.ATLAS_IMAGE}} migrate hash --dir file:///versions
+
+  seed:
+    desc: Seed demo data into a running API (API_URL to override)
+    cmds:
+      - sh docker/mock-data/seed.sh

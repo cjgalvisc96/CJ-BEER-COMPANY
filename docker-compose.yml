@@ -1,0 +1,64 @@
+# Ordered bring-up: postgres → atlas migrations → seeded, host-reachable API.
+#   task docker:up
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cjbeer-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-beer}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-beerpassword}
+      POSTGRES_DB: ${DB_NAME:-beer}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-beer} -d ${DB_NAME:-beer}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  migrate:
+    image: arigaio/atlas
+    container_name: cjbeer-migrate
+    command:
+      - migrate
+      - apply
+      - --dir
+      - file:///migrations/versions
+      - --url
+      - postgres://${DB_USER:-beer}:${DB_PASSWORD:-beerpassword}@postgres:5432/${DB_NAME:-beer}?sslmode=disable
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    container_name: cjbeer-api
+    environment:
+      HTTP_ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      GIN_MODE: ${GIN_MODE:-release}
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  seed:
+    image: alpine/curl
+    container_name: cjbeer-seed
+    entrypoint: ["/bin/sh", "/seed/seed.sh"]
+    environment:
+      API_URL: http://api:8080
+    volumes:
+      - ./docker/mock-data:/seed:ro
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  pgdata:
