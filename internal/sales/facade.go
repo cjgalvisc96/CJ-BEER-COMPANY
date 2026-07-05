@@ -16,8 +16,10 @@ import (
 )
 
 // SalesOrderJson is the inbound payload for creating an order — the
-// book's SalesOrderJson body posted to /v1/sales.
+// book's SalesOrderJson body posted to /v1/sales. Id is optional: clients
+// that supply their own uuid get IDEMPOTENT creation (safe retries).
 type SalesOrderJson struct {
+	Id               string              `json:"id"`
 	SalesOrderNumber string              `json:"sales_order_number" binding:"required"`
 	OrderDate        time.Time           `json:"order_date"`
 	CustomerId       string              `json:"customer_id"`
@@ -36,7 +38,7 @@ type SalesOrderRowJson struct {
 // and Postgres read-model services both implement it.
 type SalesOrderQueries interface {
 	GetSalesOrder(ctx context.Context, id string) (dtos.SalesOrder, error)
-	GetSalesOrders(ctx context.Context) ([]dtos.SalesOrder, error)
+	GetSalesOrders(ctx context.Context, page customtypes.Page) ([]dtos.SalesOrder, error)
 }
 
 // Facade is the module's public surface (the book's ISalesFacade): the
@@ -55,6 +57,13 @@ func NewFacade(bus *muflone.ServiceBus, queries SalesOrderQueries) *Facade {
 // order id — the caller polls the read model for the projection.
 func (f *Facade) CreateSalesOrder(ctx context.Context, body SalesOrderJson) (string, error) {
 	salesOrderId := sharedkernel.NewSalesOrderId()
+	if body.Id != "" {
+		parsed, err := uuid.Parse(body.Id)
+		if err != nil {
+			return "", muflone.ErrInvalid("invalid sales order id: " + body.Id)
+		}
+		salesOrderId = sharedkernel.SalesOrderId{Value: parsed}
+	}
 	customerId, err := uuid.Parse(body.CustomerId)
 	if err != nil {
 		customerId = uuid.New()
@@ -97,6 +106,6 @@ func (f *Facade) GetSalesOrder(ctx context.Context, id string) (dtos.SalesOrder,
 	return f.queries.GetSalesOrder(ctx, id)
 }
 
-func (f *Facade) GetSalesOrders(ctx context.Context) ([]dtos.SalesOrder, error) {
-	return f.queries.GetSalesOrders(ctx)
+func (f *Facade) GetSalesOrders(ctx context.Context, page customtypes.Page) ([]dtos.SalesOrder, error) {
+	return f.queries.GetSalesOrders(ctx, page)
 }

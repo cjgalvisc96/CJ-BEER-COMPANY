@@ -19,6 +19,16 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/sharedkernel/integrationevents"
 )
 
+// NewEventRegistry knows every event this module stores — also used by
+// the projection-rebuild command (cmd/rebuild).
+func NewEventRegistry() *muflone.EventRegistry {
+	registry := muflone.NewEventRegistry()
+	muflone.RegisterEvent[events.SalesOrderCreated](registry)
+	muflone.RegisterEvent[events.SalesOrderAllocated](registry)
+	muflone.RegisterEvent[events.SalesOrderAllocationRejected](registry)
+	return registry
+}
+
 // salesOrderReadModel is what the module needs from a read-model adapter:
 // the projection writers plus the facade queries.
 type salesOrderReadModel interface {
@@ -37,10 +47,7 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 
 	// The registry rehydrates this module's events from the store; new
 	// event versions register their upcasters here (book Ch. 11).
-	registry := muflone.NewEventRegistry()
-	muflone.RegisterEvent[events.SalesOrderCreated](registry)
-	muflone.RegisterEvent[events.SalesOrderAllocated](registry)
-	muflone.RegisterEvent[events.SalesOrderAllocationRejected](registry)
+	registry := NewEventRegistry()
 
 	// Write + read model adapters: each context owns its data.
 	var store muflone.EventStore = muflone.NewInMemoryEventStore()

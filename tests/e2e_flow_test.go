@@ -329,3 +329,46 @@ func TestInvalidSalesOrderIsRejected(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, status)
 }
+
+// TestOrderCreationIsIdempotent: a client-supplied id makes retries safe —
+// the same POST twice yields one order.
+func TestOrderCreationIsIdempotent(t *testing.T) {
+	client := newTestClient(t)
+	orderId := uuid.NewString()
+	body := map[string]any{
+		"id":                 orderId,
+		"sales_order_number": "retry-0001",
+		"customer_name":      "Flaky Network Bar",
+		"rows":               []map[string]any{},
+	}
+
+	for range 2 {
+		status, response := client.do(http.MethodPost, "/v1/sales", body)
+		require.Equal(t, http.StatusCreated, status)
+		var created struct {
+			Id string `json:"id"`
+		}
+		require.NoError(t, json.Unmarshal(response, &created))
+		assert.Equal(t, orderId, created.Id, "the supplied id round-trips")
+	}
+
+	client.eventually(func() bool {
+		status, _ := client.do(http.MethodGet, "/v1/sales/"+orderId, nil)
+		return status == http.StatusOK
+	})
+	status, response := client.do(http.MethodGet, "/v1/sales?limit=200", nil)
+	require.Equal(t, http.StatusOK, status)
+	var listing struct {
+		Items []struct {
+			Id string `json:"id"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(response, &listing))
+	occurrences := 0
+	for _, item := range listing.Items {
+		if item.Id == orderId {
+			occurrences++
+		}
+	}
+	assert.Equal(t, 1, occurrences, "no duplicate despite the retry")
+}

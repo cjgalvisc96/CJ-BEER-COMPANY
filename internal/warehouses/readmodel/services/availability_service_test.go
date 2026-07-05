@@ -19,7 +19,7 @@ func TestAvailabilityServiceQueries(t *testing.T) {
 
 	_, err := service.GetAvailability(ctx, "missing")
 	assert.ErrorIs(t, err, muflone.ErrNotFound)
-	empty, err := service.GetAvailabilities(ctx)
+	empty, err := service.GetAvailabilities(ctx, customtypes.NewPage(0, 0))
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 
@@ -34,7 +34,7 @@ func TestAvailabilityServiceQueries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 20, availability.Quantity.Value)
 
-	all, err := service.GetAvailabilities(ctx)
+	all, err := service.GetAvailabilities(ctx, customtypes.NewPage(0, 0))
 	require.NoError(t, err)
 	require.Len(t, all, 2)
 	assert.Equal(t, "Alpha IPA", all[0].BeerName, "listing is sorted by beer name")

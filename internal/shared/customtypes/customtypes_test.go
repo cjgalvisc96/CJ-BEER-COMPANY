@@ -23,3 +23,9 @@ func TestPrice(t *testing.T) {
 	assert.Equal(t, "EUR", price.Currency)
 	assert.Equal(t, "5.00 EUR", price.String())
 }
+
+func TestNewPageClampsBounds(t *testing.T) {
+	assert.Equal(t, customtypes.Page{Limit: 50, Offset: 0}, customtypes.NewPage(0, 0), "defaults")
+	assert.Equal(t, customtypes.Page{Limit: 200, Offset: 0}, customtypes.NewPage(9999, -5), "clamped")
+	assert.Equal(t, customtypes.Page{Limit: 5, Offset: 10}, customtypes.NewPage(5, 10), "as requested")
+}

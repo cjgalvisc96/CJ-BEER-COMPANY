@@ -12,6 +12,8 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Topic prefixes encode the message-handling pattern the book prescribes:
@@ -106,28 +108,34 @@ func NewServiceBusWithTransport(transport Transport, logger *slog.Logger) *Servi
 }
 
 // Send dispatches a command to its handler (fire-and-forget).
-func (b *ServiceBus) Send(_ context.Context, command Command) error {
-	return b.publish(commandTopicPrefix+command.MessageName(), command)
+func (b *ServiceBus) Send(ctx context.Context, command Command) error {
+	return b.publish(ctx, commandTopicPrefix+command.MessageName(), command)
 }
 
 // PublishDomainEvent broadcasts a domain event inside the monolith. The
 // event-store repository calls this after appending to the stream.
-func (b *ServiceBus) PublishDomainEvent(_ context.Context, event DomainEvent) error {
-	return b.publish(domainEventTopicPrefix+event.MessageName(), event)
+func (b *ServiceBus) PublishDomainEvent(ctx context.Context, event DomainEvent) error {
+	return b.publish(ctx, domainEventTopicPrefix+event.MessageName(), event)
 }
 
 // PublishIntegrationEvent broadcasts an integration event for other
 // bounded contexts.
-func (b *ServiceBus) PublishIntegrationEvent(_ context.Context, event IntegrationEvent) error {
-	return b.publish(integrationEventTopicPrefix+event.MessageName(), event)
+func (b *ServiceBus) PublishIntegrationEvent(ctx context.Context, event IntegrationEvent) error {
+	return b.publish(ctx, integrationEventTopicPrefix+event.MessageName(), event)
 }
 
-func (b *ServiceBus) publish(topic string, msg Message) error {
+func (b *ServiceBus) publish(ctx context.Context, topic string, msg Message) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", topic, err)
 	}
-	return b.publisher.Publish(topic, message.NewMessage(watermill.NewUUID(), payload))
+	// Distributed tracing across bus hops: a publish span, with the trace
+	// context carried in the message metadata (W3C traceparent).
+	ctx, span := otel.Tracer("muflone").Start(ctx, "publish "+topic)
+	defer span.End()
+	wireMessage := message.NewMessage(watermill.NewUUID(), payload)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(wireMessage.Metadata))
+	return b.publisher.Publish(topic, wireMessage)
 }
 
 // RegisterCommandHandler subscribes the single handler for command type C.
@@ -169,7 +177,14 @@ func (b *ServiceBus) SubscribeIntegrationEvent(name, messageName string, handler
 }
 
 func (b *ServiceBus) subscribe(name, topic string, handler message.NoPublishHandlerFunc) {
-	b.pending = append(b.pending, pendingSubscription{name: name, topic: topic, handler: handler})
+	traced := func(msg *message.Message) error {
+		ctx := otel.GetTextMapPropagator().Extract(msg.Context(), propagation.MapCarrier(msg.Metadata))
+		ctx, span := otel.Tracer("muflone").Start(ctx, "consume "+topic)
+		defer span.End()
+		msg.SetContext(ctx)
+		return handler(msg)
+	}
+	b.pending = append(b.pending, pendingSubscription{name: name, topic: topic, handler: traced})
 }
 
 // attachHandlers turns the pending registrations into live consumers, one

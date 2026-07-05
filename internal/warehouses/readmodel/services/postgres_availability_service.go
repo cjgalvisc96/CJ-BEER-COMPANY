@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
+	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/dtos"
 )
 
@@ -37,6 +38,14 @@ func (s *PostgresAvailabilityService) UpsertAvailability(ctx context.Context, av
 	return nil
 }
 
+// Reset wipes the projection so a rebuild can replay the event store.
+func (s *PostgresAvailabilityService) Reset(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM availabilities`); err != nil {
+		return fmt.Errorf("reset availability projections: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresAvailabilityService) GetAvailability(ctx context.Context, beerId string) (dtos.Availability, error) {
 	var availability dtos.Availability
 	err := s.db.QueryRowContext(ctx,
@@ -53,10 +62,11 @@ func (s *PostgresAvailabilityService) GetAvailability(ctx context.Context, beerI
 	return availability, nil
 }
 
-func (s *PostgresAvailabilityService) GetAvailabilities(ctx context.Context) ([]dtos.Availability, error) {
+func (s *PostgresAvailabilityService) GetAvailabilities(ctx context.Context, page customtypes.Page) ([]dtos.Availability, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT beer_id, beer_name, quantity, unit_of_measure
-		   FROM availabilities ORDER BY beer_name`)
+		   FROM availabilities ORDER BY beer_name LIMIT $1 OFFSET $2`,
+		page.Limit, page.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("list availabilities: %w", err)
 	}

@@ -18,6 +18,23 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/sharedkernel/events"
 )
 
+// NewEventRegistry knows every event this module stores — also used by
+// the projection-rebuild command (cmd/rebuild).
+func NewEventRegistry() *muflone.EventRegistry {
+	registry := muflone.NewEventRegistry()
+	muflone.RegisterEvent[events.AvailabilityUpdatedDueToProductionOrder](registry)
+	muflone.RegisterEvent[events.BeerAvailabilityUpdated](registry)
+	muflone.RegisterEvent[events.QuantityNotFound](registry)
+	muflone.RegisterEvent[events.AvailabilityCompensated](registry)
+	muflone.RegisterEvent[events.OrderAllocationStarted](registry)
+	muflone.RegisterEvent[events.AllocationStepSucceeded](registry)
+	muflone.RegisterEvent[events.AllocationStepFailed](registry)
+	muflone.RegisterEvent[events.AllocationStepCompensated](registry)
+	muflone.RegisterEvent[events.OrderAllocationCompleted](registry)
+	muflone.RegisterEvent[events.OrderAllocationRejected](registry)
+	return registry
+}
+
 // availabilityReadModel is what the module needs from a read-model
 // adapter: the projection writer plus the facade queries.
 type availabilityReadModel interface {
@@ -32,17 +49,7 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 	logger := do.MustInvoke[*slog.Logger](injector)
 	cfg := do.MustInvoke[config.Config](injector)
 
-	registry := muflone.NewEventRegistry()
-	muflone.RegisterEvent[events.AvailabilityUpdatedDueToProductionOrder](registry)
-	muflone.RegisterEvent[events.BeerAvailabilityUpdated](registry)
-	muflone.RegisterEvent[events.QuantityNotFound](registry)
-	muflone.RegisterEvent[events.AvailabilityCompensated](registry)
-	muflone.RegisterEvent[events.OrderAllocationStarted](registry)
-	muflone.RegisterEvent[events.AllocationStepSucceeded](registry)
-	muflone.RegisterEvent[events.AllocationStepFailed](registry)
-	muflone.RegisterEvent[events.AllocationStepCompensated](registry)
-	muflone.RegisterEvent[events.OrderAllocationCompleted](registry)
-	muflone.RegisterEvent[events.OrderAllocationRejected](registry)
+	registry := NewEventRegistry()
 
 	var store muflone.EventStore = muflone.NewInMemoryEventStore()
 	var readModel availabilityReadModel = services.NewAvailabilityService()

@@ -4,6 +4,7 @@ package commandhandlers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -30,6 +31,16 @@ func NewCreateSalesOrderCommandHandler(
 }
 
 func (h *CreateSalesOrderCommandHandler) Handle(ctx context.Context, command commands.CreateSalesOrder) error {
+	// Idempotent creation: clients may supply the order id and retry
+	// safely — an order that already exists is acknowledged, not
+	// duplicated (and not an error).
+	if _, err := h.repository.GetByID(ctx, command.AggregateID()); err == nil {
+		h.logger.Info("sales.order_already_exists",
+			slog.String("sales_order_id", command.SalesOrderId.Value.String()))
+		return nil
+	} else if !errors.Is(err, muflone.ErrAggregateNotFound) {
+		return err
+	}
 	aggregate, err := domain.CreateSalesOrder(
 		command.SalesOrderId,
 		command.CommitID(),

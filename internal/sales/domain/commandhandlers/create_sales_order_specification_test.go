@@ -4,11 +4,13 @@
 package commandhandlers_test
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/domain"
@@ -89,4 +91,60 @@ func TestCreateSalesOrderWithoutNumberFails(t *testing.T) {
 		Expect:        func() []muflone.DomainEvent { return nil },
 		ExpectedError: domain.ErrInvalidSalesOrder,
 	}.Run(t)
+}
+
+// TestCreateSalesOrderIsIdempotent: retrying a creation with the same
+// client-supplied id acknowledges without duplicating (safe retries).
+func TestCreateSalesOrderIsIdempotent(t *testing.T) {
+	salesOrderId := sharedkernel.NewSalesOrderId()
+	correlationId := uuid.New()
+
+	muflone.CommandSpecification[commands.CreateSalesOrder]{
+		StreamName: domain.StreamName,
+		Given: func() []muflone.DomainEvent {
+			return []muflone.DomainEvent{createdEvent(salesOrderId, correlationId)}
+		},
+		When: func() commands.CreateSalesOrder {
+			return commands.NewCreateSalesOrder(
+				salesOrderId, correlationId,
+				sharedkernel.SalesOrderNumber{Value: "20240315-1500"},
+				sharedkernel.OrderDate{Value: time.Now().UTC()},
+				sharedkernel.CustomerId{Value: uuid.New()},
+				sharedkernel.CustomerName{Value: "Muflone"},
+				nil,
+			)
+		},
+		OnHandler: func(store muflone.EventStore) muflone.CommandHandler[commands.CreateSalesOrder] {
+			return commandhandlers.NewCreateSalesOrderCommandHandler(
+				newSalesOrderRepository(store), slog.Default(),
+			)
+		},
+		Expect: func() []muflone.DomainEvent { return nil },
+	}.Run(t)
+}
+
+// failingSalesRepository drives the infrastructure-error branch of the
+// idempotency check.
+type failingSalesRepository struct{}
+
+func (failingSalesRepository) GetByID(context.Context, uuid.UUID) (*domain.SalesOrder, error) {
+	return nil, assert.AnError
+}
+
+func (failingSalesRepository) Save(context.Context, *domain.SalesOrder, uuid.UUID) error {
+	return assert.AnError
+}
+
+func TestCreateSalesOrderSurfacesStoreFailures(t *testing.T) {
+	handler := commandhandlers.NewCreateSalesOrderCommandHandler(failingSalesRepository{}, slog.Default())
+
+	err := handler.Handle(context.Background(), commands.NewCreateSalesOrder(
+		sharedkernel.NewSalesOrderId(), uuid.New(),
+		sharedkernel.SalesOrderNumber{Value: "x"},
+		sharedkernel.OrderDate{Value: time.Now().UTC()},
+		sharedkernel.CustomerId{Value: uuid.New()},
+		sharedkernel.CustomerName{Value: "y"}, nil,
+	))
+
+	assert.ErrorIs(t, err, assert.AnError)
 }

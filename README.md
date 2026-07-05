@@ -34,6 +34,12 @@ with CQRS and event sourcing**.
 - **Durable execution** — in-flight sagas resume at boot, a watchdog times
   out stalled steps (`SAGA_STEP_TIMEOUT`), and poison messages are retried
   then parked on a dead-letter topic instead of being lost.
+- **API hardening & operability** — idempotent order creation (supply your
+  own `id` and retry safely), paginated lists (`?limit=&offset=`, enveloped
+  as `{items, limit, offset}`), per-IP rate limiting and body-size caps,
+  Prometheus metrics at `/metrics`, OTel tracing across HTTP **and bus
+  hops** when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and `task rebuild` to
+  reconstruct every read model from the event store.
 - **Facades are the only public surface** — the REST layer (Gin) talks to
   `sales.Facade` / `warehouses.Facade`, never to module internals.
 - **Authentication & RBAC (Keycloak)** — with `AUTH_ISSUER` set (compose does),
@@ -127,10 +133,10 @@ curl localhost:8080/v1/warehouses/availability -H "Authorization: Bearer $OPERAT
 | Method & path | Purpose |
 |---|---|
 | `POST /v1/sales` | Place a sales order (returns the new order id) |
-| `GET /v1/sales` · `GET /v1/sales/:id` | Query order projections |
+| `GET /v1/sales` · `GET /v1/sales/:id` | Query order projections (lists paginate: `?limit=&offset=`) |
 | `POST /v1/warehouses/availability` | Declare a finished production order |
 | `GET /v1/warehouses/availability[/:beerId]` | Query stock projections |
-| `GET /healthz` · `GET /readyz` | Liveness · readiness (open, no token needed) |
+| `GET /healthz` · `GET /readyz` · `GET /metrics` | Liveness · readiness · Prometheus (open, no token needed) |
 
 RBAC: `POST /v1/sales` needs `sales-manager`; `POST /v1/warehouses/availability`
 needs `warehouse-operator`; `GET`s need `viewer`. Keycloak admin console:

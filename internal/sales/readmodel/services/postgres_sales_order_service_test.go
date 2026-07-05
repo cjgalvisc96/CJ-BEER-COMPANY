@@ -189,7 +189,7 @@ func TestPostgresGetSalesOrders(t *testing.T) {
 	mock.ExpectQuery("SELECT beer_id, beer_name").WithArgs(order.Id).
 		WillReturnRows(rowColumns().AddRow("beer-1", "BrewUp IPA", 10, "Lt", 5.0, "EUR"))
 
-	orders, err := service.GetSalesOrders(context.Background())
+	orders, err := service.GetSalesOrders(context.Background(), customtypes.NewPage(0, 0))
 
 	require.NoError(t, err)
 	require.Len(t, orders, 1)
@@ -203,27 +203,37 @@ func TestPostgresGetSalesOrdersErrors(t *testing.T) {
 	t.Run("query fails", func(t *testing.T) {
 		service, mock := newPostgresService(t)
 		mock.ExpectQuery("SELECT id, sales_order_number").WillReturnError(assert.AnError)
-		_, err := service.GetSalesOrders(ctx)
+		_, err := service.GetSalesOrders(ctx, customtypes.NewPage(0, 0))
 		assert.ErrorIs(t, err, assert.AnError)
 	})
 	t.Run("scan fails", func(t *testing.T) {
 		service, mock := newPostgresService(t)
 		mock.ExpectQuery("SELECT id, sales_order_number").WillReturnRows(
 			orderColumns().AddRow(nil, nil, "not-a-time", nil, nil, nil, nil))
-		_, err := service.GetSalesOrders(ctx)
+		_, err := service.GetSalesOrders(ctx, customtypes.NewPage(0, 0))
 		assert.Error(t, err)
 	})
 	t.Run("iteration fails", func(t *testing.T) {
 		service, mock := newPostgresService(t)
 		mock.ExpectQuery("SELECT id, sales_order_number").WillReturnRows(addOrderRow(orderColumns(), order).RowError(0, assert.AnError))
-		_, err := service.GetSalesOrders(ctx)
+		_, err := service.GetSalesOrders(ctx, customtypes.NewPage(0, 0))
 		assert.ErrorIs(t, err, assert.AnError)
 	})
 	t.Run("rows lookup fails", func(t *testing.T) {
 		service, mock := newPostgresService(t)
 		mock.ExpectQuery("SELECT id, sales_order_number").WillReturnRows(addOrderRow(orderColumns(), order))
 		mock.ExpectQuery("SELECT beer_id, beer_name").WillReturnError(assert.AnError)
-		_, err := service.GetSalesOrders(ctx)
+		_, err := service.GetSalesOrders(ctx, customtypes.NewPage(0, 0))
 		assert.ErrorIs(t, err, assert.AnError)
 	})
+}
+
+func TestPostgresReset(t *testing.T) {
+	service, mock := newPostgresService(t)
+	mock.ExpectExec("DELETE FROM sales_orders").WillReturnResult(sqlmock.NewResult(0, 3))
+	require.NoError(t, service.Reset(context.Background()))
+
+	failing, failingMock := newPostgresService(t)
+	failingMock.ExpectExec("DELETE FROM sales_orders").WillReturnError(assert.AnError)
+	assert.ErrorIs(t, failing.Reset(context.Background()), assert.AnError)
 }

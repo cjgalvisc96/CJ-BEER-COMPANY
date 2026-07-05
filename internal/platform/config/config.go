@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -31,6 +32,16 @@ type Config struct {
 	AuthJWKSURL string
 	// AuthClientID is the expected audience of the tokens.
 	AuthClientID string
+	// OTELEndpoint enables distributed tracing (OTLP/HTTP) when set.
+	OTELEndpoint string
+	// ServiceName identifies this service in traces and metrics.
+	ServiceName string
+	// RateLimitRPS caps requests per second per client IP (0 disables).
+	RateLimitRPS float64
+	// RateLimitBurst is the per-IP burst allowance.
+	RateLimitBurst int
+	// MaxBodyBytes caps request bodies (0 disables).
+	MaxBodyBytes int64
 }
 
 // Load reads configuration from the environment, falling back to sane
@@ -46,11 +57,40 @@ func Load() Config {
 		AuthIssuer:      getEnv("AUTH_ISSUER", ""),
 		AuthJWKSURL:     getEnv("AUTH_JWKS_URL", ""),
 		AuthClientID:    getEnv("AUTH_CLIENT_ID", "brewup-api"),
+		OTELEndpoint:    getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		ServiceName:     getEnv("OTEL_SERVICE_NAME", "cj-beer-company"),
+		RateLimitRPS:    getFloat("RATE_LIMIT_RPS", 50),
+		RateLimitBurst:  getInt("RATE_LIMIT_BURST", 100),
+		MaxBodyBytes:    int64(getInt("MAX_BODY_BYTES", 1<<20)),
 	}
 	if cfg.AuthJWKSURL == "" && cfg.AuthIssuer != "" {
 		cfg.AuthJWKSURL = cfg.AuthIssuer + "/protocol/openid-connect/certs"
 	}
 	return cfg
+}
+
+func getInt(key string, fallback int) int {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getFloat(key string, fallback float64) float64 {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func getDuration(key string, fallback time.Duration) time.Duration {

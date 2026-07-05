@@ -106,6 +106,11 @@ tasks:
         docker run --rm -v {{.TASKFILE_DIR}}/migrations/versions:/versions
         {{.ATLAS_IMAGE}} migrate hash --dir file:///versions
 
+  rebuild:
+    desc: Rebuild every read-model projection from the event store (needs DB_URL)
+    cmds:
+      - go run ./cmd/rebuild
+
   seed:
     desc: Seed demo data into a running API (API_URL to override)
     cmds:

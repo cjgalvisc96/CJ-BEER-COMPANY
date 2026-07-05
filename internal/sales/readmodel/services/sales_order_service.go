@@ -12,6 +12,7 @@ import (
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/dtos"
+	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 )
 
 // SalesOrderService is the in-memory adapter.
@@ -72,12 +73,12 @@ func (s *SalesOrderService) GetSalesOrder(_ context.Context, id string) (dtos.Sa
 	return order, nil
 }
 
-func (s *SalesOrderService) GetSalesOrders(_ context.Context) ([]dtos.SalesOrder, error) {
+func (s *SalesOrderService) GetSalesOrders(_ context.Context, page customtypes.Page) ([]dtos.SalesOrder, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	orders := make([]dtos.SalesOrder, 0, len(s.order))
-	for _, id := range s.order {
-		orders = append(orders, s.orders[id])
+	orders := make([]dtos.SalesOrder, 0, page.Limit)
+	for index := page.Offset; index < len(s.order) && len(orders) < page.Limit; index++ {
+		orders = append(orders, s.orders[s.order[index]])
 	}
 	return orders, nil
 }

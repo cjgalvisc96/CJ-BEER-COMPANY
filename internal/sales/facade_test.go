@@ -46,3 +46,26 @@ func TestFacadeSurfacesBusFailures(t *testing.T) {
 
 	assert.Error(t, err)
 }
+
+func TestFacadeRejectsInvalidClientSuppliedOrderId(t *testing.T) {
+	facade := sales.NewFacade(muflone.NewServiceBus(slog.Default()), services.NewSalesOrderService())
+	order := validOrder(uuid.NewString())
+	order.Id = "not-a-uuid"
+
+	_, err := facade.CreateSalesOrder(context.Background(), order)
+
+	var invalid muflone.ErrInvalid
+	assert.ErrorAs(t, err, &invalid)
+}
+
+func TestFacadeUsesClientSuppliedOrderId(t *testing.T) {
+	bus := muflone.NewServiceBus(slog.Default())
+	facade := sales.NewFacade(bus, services.NewSalesOrderService())
+	order := validOrder(uuid.NewString())
+	order.Id = uuid.NewString()
+
+	orderId, err := facade.CreateSalesOrder(context.Background(), order)
+
+	require.NoError(t, err)
+	assert.Equal(t, order.Id, orderId, "the id round-trips for idempotent retries")
+}

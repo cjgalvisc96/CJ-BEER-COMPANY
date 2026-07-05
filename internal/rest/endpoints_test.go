@@ -19,6 +19,7 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales"
 	salesdtos "github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/dtos"
 	salesservices "github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/services"
+	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses"
 	warehousesdtos "github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/dtos"
 	warehousesservices "github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/services"
@@ -31,7 +32,7 @@ func (f *failingSalesQueries) GetSalesOrder(context.Context, string) (salesdtos.
 	return salesdtos.SalesOrder{}, f.err
 }
 
-func (f *failingSalesQueries) GetSalesOrders(context.Context) ([]salesdtos.SalesOrder, error) {
+func (f *failingSalesQueries) GetSalesOrders(context.Context, customtypes.Page) ([]salesdtos.SalesOrder, error) {
 	return nil, f.err
 }
 
@@ -41,7 +42,7 @@ func (f *failingAvailabilityQueries) GetAvailability(context.Context, string) (w
 	return warehousesdtos.Availability{}, f.err
 }
 
-func (f *failingAvailabilityQueries) GetAvailabilities(context.Context) ([]warehousesdtos.Availability, error) {
+func (f *failingAvailabilityQueries) GetAvailabilities(context.Context, customtypes.Page) ([]warehousesdtos.Availability, error) {
 	return nil, f.err
 }
 
@@ -56,8 +57,7 @@ func newRouter(t *testing.T, ready rest.ReadinessCheck) http.Handler {
 		slog.Default(),
 		sales.NewFacade(bus, salesservices.NewSalesOrderService()),
 		warehouses.NewFacade(bus, warehousesservices.NewAvailabilityService()),
-		ready,
-		nil, // auth disabled
+		rest.Options{Ready: ready},
 	)
 }
 
@@ -123,8 +123,7 @@ func TestReadModelFailuresReturn500(t *testing.T) {
 		slog.Default(),
 		sales.NewFacade(bus, &failingSalesQueries{err: storeErr}),
 		warehouses.NewFacade(bus, &failingAvailabilityQueries{err: storeErr}),
-		nil,
-		nil, // auth disabled
+		rest.Options{},
 	)
 
 	assert.Equal(t, http.StatusInternalServerError,

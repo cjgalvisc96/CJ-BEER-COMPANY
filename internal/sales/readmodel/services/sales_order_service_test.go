@@ -10,6 +10,7 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/dtos"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/services"
+	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 )
 
 func TestSalesOrderServiceQueries(t *testing.T) {
@@ -18,7 +19,7 @@ func TestSalesOrderServiceQueries(t *testing.T) {
 
 	_, err := service.GetSalesOrder(ctx, "missing")
 	assert.ErrorIs(t, err, muflone.ErrNotFound)
-	empty, err := service.GetSalesOrders(ctx)
+	empty, err := service.GetSalesOrders(ctx, customtypes.NewPage(0, 0))
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 
@@ -31,7 +32,7 @@ func TestSalesOrderServiceQueries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "A2", order.SalesOrderNumber)
 
-	all, err := service.GetSalesOrders(ctx)
+	all, err := service.GetSalesOrders(ctx, customtypes.NewPage(0, 0))
 	require.NoError(t, err)
 	require.Len(t, all, 2)
 	assert.Equal(t, "A2", all[0].SalesOrderNumber, "insertion order is stable")

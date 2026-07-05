@@ -48,8 +48,7 @@ func newAuthedRouter(t *testing.T) http.Handler {
 		slog.Default(),
 		sales.NewFacade(bus, salesservices.NewSalesOrderService()),
 		warehouses.NewFacade(bus, warehousesservices.NewAvailabilityService()),
-		nil,
-		verifier,
+		rest.Options{Verifier: verifier},
 	)
 }
 

@@ -26,7 +26,7 @@ type ProductionOrderJson struct {
 // and Postgres read-model services both implement it.
 type AvailabilityQueries interface {
 	GetAvailability(ctx context.Context, beerId string) (dtos.Availability, error)
-	GetAvailabilities(ctx context.Context) ([]dtos.Availability, error)
+	GetAvailabilities(ctx context.Context, page customtypes.Page) ([]dtos.Availability, error)
 }
 
 // Facade is the module's public surface (the book's IWarehousesFacade).
@@ -62,6 +62,6 @@ func (f *Facade) GetAvailability(ctx context.Context, beerId string) (dtos.Avail
 	return f.queries.GetAvailability(ctx, beerId)
 }
 
-func (f *Facade) GetAvailabilities(ctx context.Context) ([]dtos.Availability, error) {
-	return f.queries.GetAvailabilities(ctx)
+func (f *Facade) GetAvailabilities(ctx context.Context, page customtypes.Page) ([]dtos.Availability, error) {
+	return f.queries.GetAvailabilities(ctx, page)
 }

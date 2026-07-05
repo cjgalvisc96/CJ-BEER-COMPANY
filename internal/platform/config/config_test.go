@@ -74,3 +74,28 @@ func TestLoadFromEnvironment(t *testing.T) {
 	assert.Equal(t, "release", cfg.GinMode)
 	assert.Equal(t, "postgres://beer@localhost/beer", cfg.DBURL)
 }
+
+func TestHardeningAndTelemetryConfig(t *testing.T) {
+	cfg := config.Load()
+	assert.Equal(t, "cj-beer-company", cfg.ServiceName)
+	assert.Equal(t, 50.0, cfg.RateLimitRPS)
+	assert.Equal(t, 100, cfg.RateLimitBurst)
+	assert.Equal(t, int64(1<<20), cfg.MaxBodyBytes)
+	assert.Empty(t, cfg.OTELEndpoint)
+
+	t.Setenv("RATE_LIMIT_RPS", "2.5")
+	t.Setenv("RATE_LIMIT_BURST", "7")
+	t.Setenv("MAX_BODY_BYTES", "1024")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+	cfg = config.Load()
+	assert.Equal(t, 2.5, cfg.RateLimitRPS)
+	assert.Equal(t, 7, cfg.RateLimitBurst)
+	assert.Equal(t, int64(1024), cfg.MaxBodyBytes)
+	assert.Equal(t, "http://collector:4318", cfg.OTELEndpoint)
+
+	t.Setenv("RATE_LIMIT_RPS", "junk")
+	t.Setenv("RATE_LIMIT_BURST", "junk")
+	cfg = config.Load()
+	assert.Equal(t, 50.0, cfg.RateLimitRPS, "unparseable falls back")
+	assert.Equal(t, 100, cfg.RateLimitBurst, "unparseable falls back")
+}

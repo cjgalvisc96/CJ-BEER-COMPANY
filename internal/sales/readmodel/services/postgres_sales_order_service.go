@@ -8,6 +8,7 @@ import (
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales/readmodel/dtos"
+	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 )
 
 // PostgresSalesOrderService is the durable adapter over the projection
@@ -64,6 +65,15 @@ func (s *PostgresSalesOrderService) CreateSalesOrder(ctx context.Context, order 
 	return nil
 }
 
+// Reset wipes the projections so a rebuild can replay the event store
+// from scratch (rows cascade from orders).
+func (s *PostgresSalesOrderService) Reset(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sales_orders`); err != nil {
+		return fmt.Errorf("reset sales projections: %w", err)
+	}
+	return nil
+}
+
 // UpdateAllocationStatus records the saga outcome; a stub row absorbs the
 // status when it lands before the created projection.
 func (s *PostgresSalesOrderService) UpdateAllocationStatus(ctx context.Context, salesOrderId, status, reason string) error {
@@ -103,11 +113,12 @@ func (s *PostgresSalesOrderService) GetSalesOrder(ctx context.Context, id string
 	return order, nil
 }
 
-func (s *PostgresSalesOrderService) GetSalesOrders(ctx context.Context) ([]dtos.SalesOrder, error) {
+func (s *PostgresSalesOrderService) GetSalesOrders(ctx context.Context, page customtypes.Page) ([]dtos.SalesOrder, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, sales_order_number, order_date, customer_id, customer_name,
 		        allocation_status, rejection_reason
-		   FROM sales_orders ORDER BY projected_at, id`)
+		   FROM sales_orders ORDER BY projected_at, id LIMIT $1 OFFSET $2`,
+		page.Limit, page.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("list sales orders: %w", err)
 	}

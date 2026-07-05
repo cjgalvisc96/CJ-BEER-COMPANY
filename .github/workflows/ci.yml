@@ -223,6 +223,10 @@ jobs:
             -H "Authorization: Bearer $BARFLY" | jq -r .quantity.value)" = "70"
           echo "choreography OK: 100 Lt produced, 30 Lt allocated, 70 Lt left"
 
+          # Operability: Prometheus metrics are exposed and populated.
+          curl -sf localhost:8080/metrics | grep -q http_server_requests
+          echo "metrics OK"
+
           # Production readiness: the event store and projections live in
           # Postgres, so a restarted API must still see everything.
           test "$(curl -sf localhost:8080/readyz | jq -r .status)" = "ready"

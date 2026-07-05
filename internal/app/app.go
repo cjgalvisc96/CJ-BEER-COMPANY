@@ -19,6 +19,7 @@ import (
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/config"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/database"
 	"github.com/cjgalvisc96/cj-beer-company/internal/platform/logging"
+	"github.com/cjgalvisc96/cj-beer-company/internal/platform/telemetry"
 	"github.com/cjgalvisc96/cj-beer-company/internal/rest"
 	"github.com/cjgalvisc96/cj-beer-company/internal/sales"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses"
@@ -28,11 +29,12 @@ import (
 const shutdownTimeout = 10 * time.Second
 
 type App struct {
-	Injector do.Injector
-	cfg      config.Config
-	logger   *slog.Logger
-	bus      *muflone.ServiceBus
-	engine   *gin.Engine
+	Injector        do.Injector
+	cfg             config.Config
+	logger          *slog.Logger
+	bus             *muflone.ServiceBus
+	engine          *gin.Engine
+	shutdownTracing func(context.Context) error
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -85,15 +87,33 @@ func New(cfg config.Config) (*App, error) {
 		logger.Warn("auth.disabled")
 	}
 
+	// Observability: Prometheus metrics always (cheap, local); OTLP
+	// traces when an endpoint is configured.
+	shutdownTracing := telemetry.InitTracing(context.Background(), cfg.OTELEndpoint, cfg.ServiceName)
+	metricsHandler, err := telemetry.InitMetrics(cfg.ServiceName)
+	if err != nil {
+		return nil, fmt.Errorf("init metrics: %w", err)
+	}
+
 	engine := rest.NewRouter(
 		logger,
 		do.MustInvoke[*sales.Facade](injector),
 		do.MustInvoke[*warehouses.Facade](injector),
-		ready,
-		verifier,
+		rest.Options{
+			Ready:          ready,
+			Verifier:       verifier,
+			MaxBodyBytes:   cfg.MaxBodyBytes,
+			RateLimitRPS:   cfg.RateLimitRPS,
+			RateLimitBurst: cfg.RateLimitBurst,
+			MetricsHandler: metricsHandler,
+			TracingEnabled: cfg.OTELEndpoint != "",
+		},
 	)
 
-	return &App{Injector: injector, cfg: cfg, logger: logger, bus: bus, engine: engine}, nil
+	return &App{
+		Injector: injector, cfg: cfg, logger: logger, bus: bus, engine: engine,
+		shutdownTracing: shutdownTracing,
+	}, nil
 }
 
 // Run blocks until ctx is cancelled, then shuts down gracefully.
@@ -130,6 +150,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	if err := a.bus.Close(); err != nil {
 		return fmt.Errorf("bus shutdown: %w", err)
+	}
+	if err := a.shutdownTracing(shutdownCtx); err != nil {
+		return fmt.Errorf("tracing shutdown: %w", err)
 	}
 	return nil
 }

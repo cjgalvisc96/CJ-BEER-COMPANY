@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/cjgalvisc96/cj-beer-company/internal/muflone"
+	"github.com/cjgalvisc96/cj-beer-company/internal/shared/customtypes"
 	"github.com/cjgalvisc96/cj-beer-company/internal/warehouses/readmodel/dtos"
 )
 
@@ -41,15 +42,19 @@ func (s *AvailabilityService) GetAvailability(_ context.Context, beerId string) 
 	return availability, nil
 }
 
-func (s *AvailabilityService) GetAvailabilities(_ context.Context) ([]dtos.Availability, error) {
+func (s *AvailabilityService) GetAvailabilities(_ context.Context, page customtypes.Page) ([]dtos.Availability, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	availabilities := make([]dtos.Availability, 0, len(s.availabilities))
+	all := make([]dtos.Availability, 0, len(s.availabilities))
 	for _, availability := range s.availabilities {
-		availabilities = append(availabilities, availability)
+		all = append(all, availability)
 	}
-	sort.Slice(availabilities, func(i, j int) bool {
-		return availabilities[i].BeerName < availabilities[j].BeerName
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].BeerName < all[j].BeerName
 	})
+	availabilities := make([]dtos.Availability, 0, page.Limit)
+	for index := page.Offset; index < len(all) && len(availabilities) < page.Limit; index++ {
+		availabilities = append(availabilities, all[index])
+	}
 	return availabilities, nil
 }

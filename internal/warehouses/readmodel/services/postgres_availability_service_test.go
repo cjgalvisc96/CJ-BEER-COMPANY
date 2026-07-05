@@ -82,7 +82,7 @@ func TestPostgresGetAvailabilities(t *testing.T) {
 			AddRow("beer-1", "Alpha IPA", 20, "Lt").
 			AddRow("beer-2", "Zeta Stout", 10, "Lt"))
 
-	availabilities, err := service.GetAvailabilities(context.Background())
+	availabilities, err := service.GetAvailabilities(context.Background(), customtypes.NewPage(0, 0))
 
 	require.NoError(t, err)
 	require.Len(t, availabilities, 2)
@@ -95,21 +95,31 @@ func TestPostgresGetAvailabilitiesErrors(t *testing.T) {
 	t.Run("query fails", func(t *testing.T) {
 		service, mock := newPostgresService(t)
 		mock.ExpectQuery("SELECT beer_id, beer_name").WillReturnError(assert.AnError)
-		_, err := service.GetAvailabilities(ctx)
+		_, err := service.GetAvailabilities(ctx, customtypes.NewPage(0, 0))
 		assert.ErrorIs(t, err, assert.AnError)
 	})
 	t.Run("scan fails", func(t *testing.T) {
 		service, mock := newPostgresService(t)
 		mock.ExpectQuery("SELECT beer_id, beer_name").WillReturnRows(
 			availabilityColumns().AddRow("b", "n", "not-an-int", "Lt"))
-		_, err := service.GetAvailabilities(ctx)
+		_, err := service.GetAvailabilities(ctx, customtypes.NewPage(0, 0))
 		assert.Error(t, err)
 	})
 	t.Run("iteration fails", func(t *testing.T) {
 		service, mock := newPostgresService(t)
 		mock.ExpectQuery("SELECT beer_id, beer_name").WillReturnRows(
 			availabilityColumns().AddRow("b", "n", 1, "Lt").RowError(0, assert.AnError))
-		_, err := service.GetAvailabilities(ctx)
+		_, err := service.GetAvailabilities(ctx, customtypes.NewPage(0, 0))
 		assert.ErrorIs(t, err, assert.AnError)
 	})
+}
+
+func TestPostgresReset(t *testing.T) {
+	service, mock := newPostgresService(t)
+	mock.ExpectExec("DELETE FROM availabilities").WillReturnResult(sqlmock.NewResult(0, 3))
+	require.NoError(t, service.Reset(context.Background()))
+
+	failing, failingMock := newPostgresService(t)
+	failingMock.ExpectExec("DELETE FROM availabilities").WillReturnError(assert.AnError)
+	assert.ErrorIs(t, failing.Reset(context.Background()), assert.AnError)
 }
