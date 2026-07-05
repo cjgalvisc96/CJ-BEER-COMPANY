@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
@@ -27,9 +26,6 @@ const (
 	// exhausted (book Ch. 12: failed messages must never be lost — they
 	// are parked for inspection instead of blocking the bus).
 	DeadLetterTopic = "brewup.dead_letter"
-
-	poisonRetries       = 3
-	poisonRetryInterval = 50 * time.Millisecond
 )
 
 // CommandHandler consumes one command type — Muflone's
@@ -82,11 +78,7 @@ func NewServiceBusWithTransport(transport Transport, logger *slog.Logger) *Servi
 	// only errors on an empty topic — unreachable with the constant.
 	poison, _ := middleware.PoisonQueue(transport.Publisher(), DeadLetterTopic)
 	router.AddMiddleware(poison)
-	router.AddMiddleware(middleware.Retry{
-		MaxRetries:      poisonRetries,
-		InitialInterval: poisonRetryInterval,
-		Logger:          wmLogger,
-	}.Middleware)
+	router.AddMiddleware(retryMiddleware)
 
 	bus := &ServiceBus{
 		transport: transport,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -86,4 +87,50 @@ func TestMetricsEndpointServesPrometheus(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), "http_server_requests")
+}
+
+// TestRateLimiterCannotBeSpoofedByDefault: with no trusted proxies, the
+// client IP comes from the connection — X-Forwarded-For is ignored, so an
+// attacker cannot mint fresh rate-limit buckets per request.
+func TestRateLimiterCannotBeSpoofedByDefault(t *testing.T) {
+	router := routerWith(t, rest.Options{RateLimitRPS: 1, RateLimitBurst: 2})
+
+	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusTooManyRequests} {
+		recorder := doWithHeaders(t, router, http.MethodGet, "/healthz", "",
+			map[string]string{"X-Forwarded-For": "10.9.9." + strconv.Itoa(i)})
+		assert.Equal(t, want, recorder.Code, "request %d shares one bucket despite spoofed XFF", i)
+	}
+}
+
+// TestTrustedProxyHonorsForwardedFor: when the proxy IS trusted, the
+// forwarded client IP keys the bucket.
+func TestTrustedProxyHonorsForwardedFor(t *testing.T) {
+	// httptest requests arrive from 192.0.2.1 — trust it as the proxy.
+	router := routerWith(t, rest.Options{
+		RateLimitRPS: 1, RateLimitBurst: 1,
+		TrustedProxies: []string{"192.0.2.1"},
+	})
+
+	first := doWithHeaders(t, router, http.MethodGet, "/healthz", "",
+		map[string]string{"X-Forwarded-For": "203.0.113.7"})
+	second := doWithHeaders(t, router, http.MethodGet, "/healthz", "",
+		map[string]string{"X-Forwarded-For": "203.0.113.8"})
+	assert.Equal(t, http.StatusOK, first.Code)
+	assert.Equal(t, http.StatusOK, second.Code, "distinct clients get distinct buckets")
+}
+
+// TestInvalidTrustedProxyFallsBackToTrustNone: a bad CIDR must never
+// silently widen trust.
+func TestInvalidTrustedProxyFallsBackToTrustNone(t *testing.T) {
+	router := routerWith(t, rest.Options{
+		RateLimitRPS: 1, RateLimitBurst: 1,
+		TrustedProxies: []string{"not-a-cidr"},
+	})
+
+	first := doWithHeaders(t, router, http.MethodGet, "/healthz", "",
+		map[string]string{"X-Forwarded-For": "203.0.113.7"})
+	second := doWithHeaders(t, router, http.MethodGet, "/healthz", "",
+		map[string]string{"X-Forwarded-For": "203.0.113.8"})
+	assert.Equal(t, http.StatusOK, first.Code)
+	assert.Equal(t, http.StatusTooManyRequests, second.Code, "spoofed XFF ignored")
 }

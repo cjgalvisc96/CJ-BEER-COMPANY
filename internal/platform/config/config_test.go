@@ -99,3 +99,16 @@ func TestHardeningAndTelemetryConfig(t *testing.T) {
 	assert.Equal(t, 50.0, cfg.RateLimitRPS, "unparseable falls back")
 	assert.Equal(t, 100, cfg.RateLimitBurst, "unparseable falls back")
 }
+
+func TestTrustedProxiesAndOutboxConfig(t *testing.T) {
+	t.Setenv("TRUSTED_PROXIES", "")
+	cfg := config.Load()
+	assert.Nil(t, cfg.TrustedProxies, "trust none by default")
+	assert.Equal(t, 250*time.Millisecond, cfg.OutboxInterval)
+
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.1 ,")
+	t.Setenv("OUTBOX_INTERVAL", "1s")
+	cfg = config.Load()
+	assert.Equal(t, []string{"10.0.0.0/8", "192.168.1.1"}, cfg.TrustedProxies)
+	assert.Equal(t, time.Second, cfg.OutboxInterval)
+}

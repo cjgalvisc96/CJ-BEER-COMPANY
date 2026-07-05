@@ -111,6 +111,11 @@ tasks:
     cmds:
       - go run ./cmd/rebuild
 
+  redrive:
+    desc: Republish archived dead letters to their topics (needs DB_URL + BROKER_URL)
+    cmds:
+      - go run ./cmd/redrive
+
   seed:
     desc: Seed demo data into a running API (API_URL to override)
     cmds:

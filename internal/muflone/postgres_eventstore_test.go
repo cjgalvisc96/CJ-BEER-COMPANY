@@ -103,6 +103,9 @@ func TestPostgresAppend(t *testing.T) {
 	mock.ExpectExec("INSERT INTO events").
 		WithArgs("Stub-1", 1, sqlmock.AnyArg(), event.MessageName(), storedPayload(t, event)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO outbox").
+		WithArgs("events."+event.MessageName(), storedPayload(t, event)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	err := store.Append(context.Background(), "Stub-1", 0, uuid.New(), []DomainEvent{event})
@@ -167,11 +170,22 @@ func TestPostgresAppendErrors(t *testing.T) {
 		assert.ErrorIs(t, store.Append(ctx, "Stub-1", 0, uuid.New(), events), assert.AnError)
 	})
 
+	t.Run("outbox enqueue fails", func(t *testing.T) {
+		store, mock := newStoreWithMock(t)
+		mock.ExpectBegin()
+		headQuery(mock, 0)
+		mock.ExpectExec("INSERT INTO events").WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("INSERT INTO outbox").WillReturnError(assert.AnError)
+		mock.ExpectRollback()
+		assert.ErrorIs(t, store.Append(ctx, "Stub-1", 0, uuid.New(), events), assert.AnError)
+	})
+
 	t.Run("commit fails", func(t *testing.T) {
 		store, mock := newStoreWithMock(t)
 		mock.ExpectBegin()
 		headQuery(mock, 0)
 		mock.ExpectExec("INSERT INTO events").WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("INSERT INTO outbox").WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit().WillReturnError(assert.AnError)
 		assert.ErrorIs(t, store.Append(ctx, "Stub-1", 0, uuid.New(), events), assert.AnError)
 	})

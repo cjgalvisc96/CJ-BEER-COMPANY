@@ -51,16 +51,20 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 
 	registry := NewEventRegistry()
 
+	// In durable mode the transactional outbox + relay publish the events
+	// (no dual-write); in memory the repository publishes directly.
+	var eventPublisher muflone.DomainEventPublisher = bus
 	var store muflone.EventStore = muflone.NewInMemoryEventStore()
 	var readModel availabilityReadModel = services.NewAvailabilityService()
 	if cfg.DBURL != "" {
 		db := do.MustInvoke[*sql.DB](injector)
 		store = muflone.NewPostgresEventStore(db, registry)
+		eventPublisher = nil
 		readModel = services.NewPostgresAvailabilityService(db)
 	}
 
 	repository := muflone.NewEventStoreRepository(
-		store, domain.NewAvailability, domain.StreamName, bus,
+		store, domain.NewAvailability, domain.StreamName, eventPublisher,
 	)
 	muflone.RegisterCommandHandler(bus,
 		commandhandlers.NewUpdateAvailabilityDueToProductionOrderCommandHandler(repository, logger))
@@ -83,7 +87,7 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 	// event store, triggered by the Sales integration event, advanced by
 	// this module's own step events.
 	sagaRepository := muflone.NewEventStoreRepository(
-		store, domain.NewOrderAllocationSaga, domain.SagaStreamName, bus,
+		store, domain.NewOrderAllocationSaga, domain.SagaStreamName, eventPublisher,
 	)
 	saga := sagas.NewOrderAllocationSaga(sagaRepository, store, bus, logger)
 	bus.SubscribeIntegrationEvent("warehouses.saga.on_sales_order_created",

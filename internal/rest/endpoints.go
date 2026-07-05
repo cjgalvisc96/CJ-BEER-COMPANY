@@ -37,6 +37,9 @@ type Options struct {
 	MetricsHandler http.Handler
 	// TracingEnabled adds the OTel HTTP middleware.
 	TracingEnabled bool
+	// TrustedProxies whose X-Forwarded-For is honored; empty trusts none,
+	// so client IPs (and the rate limiter) cannot be spoofed.
+	TrustedProxies []string
 }
 
 // pageOf reads ?limit=&offset= with clamped defaults.
@@ -64,6 +67,11 @@ func NewRouter(
 ) *gin.Engine {
 	ready, verifier := opts.Ready, opts.Verifier
 	engine := gin.New()
+	if err := engine.SetTrustedProxies(opts.TrustedProxies); err != nil {
+		// An invalid CIDR must never silently widen trust: log and trust none.
+		logger.Warn("rest.invalid_trusted_proxies", slog.String("error", err.Error()))
+		_ = engine.SetTrustedProxies(nil)
+	}
 	engine.Use(gin.Recovery(), requestLogger(logger), httpMetrics(),
 		rateLimit(opts.RateLimitRPS, opts.RateLimitBurst), bodyLimit(opts.MaxBodyBytes))
 	if opts.TracingEnabled {

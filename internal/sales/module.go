@@ -50,16 +50,20 @@ func Register(injector do.Injector, bus *muflone.ServiceBus) {
 	registry := NewEventRegistry()
 
 	// Write + read model adapters: each context owns its data.
+	// In durable mode the transactional outbox + relay publish the events
+	// (no dual-write); in memory the repository publishes directly.
+	var eventPublisher muflone.DomainEventPublisher = bus
 	var store muflone.EventStore = muflone.NewInMemoryEventStore()
 	var readModel salesOrderReadModel = services.NewSalesOrderService()
 	if cfg.DBURL != "" {
 		db := do.MustInvoke[*sql.DB](injector)
 		store = muflone.NewPostgresEventStore(db, registry)
+		eventPublisher = nil
 		readModel = services.NewPostgresSalesOrderService(db)
 	}
 
 	repository := muflone.NewEventStoreRepository(
-		store, domain.NewSalesOrder, domain.StreamName, bus,
+		store, domain.NewSalesOrder, domain.StreamName, eventPublisher,
 	)
 	muflone.RegisterCommandHandler(bus,
 		commandhandlers.NewCreateSalesOrderCommandHandler(repository, logger))

@@ -123,6 +123,14 @@ func (s *PostgresEventStore) Append(
 			}
 			return fmt.Errorf("append to %s: %w", streamID, err)
 		}
+		// Transactional outbox: the wire message commits atomically with
+		// the stream append; the relay publishes it (no dual-write gap).
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO outbox (topic, payload) VALUES ($1, $2)`,
+			domainEventTopicPrefix+event.MessageName(), payload,
+		); err != nil {
+			return fmt.Errorf("outbox enqueue %s: %w", event.MessageName(), err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("append to %s: %w", streamID, err)

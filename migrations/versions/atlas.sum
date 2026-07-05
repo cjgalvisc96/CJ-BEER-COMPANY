@@ -1,3 +1,4 @@
-h1:7Yad9M8+Cd47olQhYXiK4zxTGiyYexr5PuUjUGxNdR8=
+h1:5bZT310p28qf1TXBsc9CxHgYITdwgsVfrGmKKcIN/gI=
 20260705000000_baseline.sql h1:8WgEzWyGFEDIWubvi4WpLzOTCt1HH/QeQFe02nsLD3U=
 20260705000100_sales_order_allocation_status.sql h1:yosWdib3fGwJz/F7rviJVbFJ1R2Dz8Gc1X45HJH79xk=
+20260705000300_outbox_and_dead_letters.sql h1:w5NUlK0uFZf7BF3VKTIF/y7Kb/Yvdhb2wkXmCivqG6I=

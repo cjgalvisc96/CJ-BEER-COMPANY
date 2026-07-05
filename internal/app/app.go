@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,6 +36,7 @@ type App struct {
 	bus             *muflone.ServiceBus
 	engine          *gin.Engine
 	shutdownTracing func(context.Context) error
+	relay           *muflone.OutboxRelay
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -47,11 +49,13 @@ func New(cfg config.Config) (*App, error) {
 
 	// Durable mode: one shared Postgres pool, fail fast if unreachable.
 	var ready rest.ReadinessCheck
+	var db *sql.DB
 	if cfg.DBURL != "" {
-		db, err := database.Open(cfg.DBURL)
+		opened, err := database.Open(cfg.DBURL)
 		if err != nil {
 			return nil, err
 		}
+		db = opened
 		do.ProvideValue(injector, db)
 		ready = db.PingContext
 		logger.Info("persistence.durable", slog.String("driver", "postgres"))
@@ -72,6 +76,16 @@ func New(cfg config.Config) (*App, error) {
 	} else {
 		bus = muflone.NewServiceBus(logger)
 		logger.Info("messaging.in_memory")
+	}
+
+	// Durable mode: the transactional-outbox relay is the publisher, and
+	// poison messages are archived for `task redrive`.
+	var relay *muflone.OutboxRelay
+	if db != nil {
+		relay = muflone.NewOutboxRelay(db, bus, cfg.OutboxInterval, logger)
+		deadLetters := muflone.NewDeadLetterStore(db)
+		bus.OnDeadLetter("muflone.dead_letter_archive", deadLetters.Save)
+		logger.Info("messaging.outbox", slog.Duration("interval", cfg.OutboxInterval))
 	}
 
 	sales.Register(injector, bus)
@@ -107,12 +121,13 @@ func New(cfg config.Config) (*App, error) {
 			RateLimitBurst: cfg.RateLimitBurst,
 			MetricsHandler: metricsHandler,
 			TracingEnabled: cfg.OTELEndpoint != "",
+			TrustedProxies: cfg.TrustedProxies,
 		},
 	)
 
 	return &App{
 		Injector: injector, cfg: cfg, logger: logger, bus: bus, engine: engine,
-		shutdownTracing: shutdownTracing,
+		shutdownTracing: shutdownTracing, relay: relay,
 	}, nil
 }
 
@@ -126,6 +141,9 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}()
 	<-a.bus.Running()
+	if a.relay != nil {
+		go a.relay.Run(ctx)
+	}
 	a.startSagaSupervision(ctx)
 
 	server := &nethttp.Server{Addr: a.cfg.HTTPAddr, Handler: a.engine}

@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -42,6 +43,11 @@ type Config struct {
 	RateLimitBurst int
 	// MaxBodyBytes caps request bodies (0 disables).
 	MaxBodyBytes int64
+	// TrustedProxies lists the proxies whose X-Forwarded-For is honored
+	// for client IPs; EMPTY trusts none (spoof-proof default).
+	TrustedProxies []string
+	// OutboxInterval is the relay's polling cadence in durable mode.
+	OutboxInterval time.Duration
 }
 
 // Load reads configuration from the environment, falling back to sane
@@ -62,11 +68,27 @@ func Load() Config {
 		RateLimitRPS:    getFloat("RATE_LIMIT_RPS", 50),
 		RateLimitBurst:  getInt("RATE_LIMIT_BURST", 100),
 		MaxBodyBytes:    int64(getInt("MAX_BODY_BYTES", 1<<20)),
+		TrustedProxies:  getList("TRUSTED_PROXIES"),
+		OutboxInterval:  getDuration("OUTBOX_INTERVAL", 250*time.Millisecond),
 	}
 	if cfg.AuthJWKSURL == "" && cfg.AuthIssuer != "" {
 		cfg.AuthJWKSURL = cfg.AuthIssuer + "/protocol/openid-connect/certs"
 	}
 	return cfg
+}
+
+func getList(key string) []string {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return nil
+	}
+	var entries []string
+	for _, entry := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			entries = append(entries, trimmed)
+		}
+	}
+	return entries
 }
 
 func getInt(key string, fallback int) int {

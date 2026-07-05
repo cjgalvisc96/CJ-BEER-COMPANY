@@ -22,6 +22,8 @@ services:
   rabbitmq:
     image: rabbitmq:4-alpine
     container_name: cjbeer-rabbitmq
+    ports:
+      - "5672:5672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 3s

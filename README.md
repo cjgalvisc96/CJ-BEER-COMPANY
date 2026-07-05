@@ -36,10 +36,17 @@ with CQRS and event sourcing**.
   then parked on a dead-letter topic instead of being lost.
 - **API hardening & operability** — idempotent order creation (supply your
   own `id` and retry safely), paginated lists (`?limit=&offset=`, enveloped
-  as `{items, limit, offset}`), per-IP rate limiting and body-size caps,
+  as `{items, limit, offset}`), per-IP rate limiting (spoof-proof: proxies
+  must be explicitly trusted via `TRUSTED_PROXIES`) and body-size caps,
   Prometheus metrics at `/metrics`, OTel tracing across HTTP **and bus
-  hops** when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and `task rebuild` to
-  reconstruct every read model from the event store.
+  hops**, and `task rebuild` to reconstruct every read model from the
+  event store.
+- **At-least-once, everywhere** — in durable mode a **transactional
+  outbox** commits each event's wire message atomically with the stream
+  append and a relay publishes it: no crash window can lose an event.
+  Concurrency conflicts retry patiently instead of dead-lettering; real
+  poison messages are archived durably and `task redrive` republishes
+  them once the cause is fixed.
 - **Facades are the only public surface** — the REST layer (Gin) talks to
   `sales.Facade` / `warehouses.Facade`, never to module internals.
 - **Authentication & RBAC (Keycloak)** — with `AUTH_ISSUER` set (compose does),
