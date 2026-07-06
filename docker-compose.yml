@@ -75,6 +75,8 @@ services:
     build: .
     container_name: cjbeer-api
     environment:
+      # This stack is a local environment; override APP_ENV in .env to relabel.
+      APP_ENV: ${APP_ENV:-local}
       HTTP_ADDR: ":8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       GIN_MODE: ${GIN_MODE:-release}

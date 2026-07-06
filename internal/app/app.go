@@ -40,8 +40,13 @@ type App struct {
 }
 
 func New(cfg config.Config) (*App, error) {
-	logger := logging.New(cfg.LogLevel)
-	logger.Info("app.environment", slog.String("env", cfg.AppEnv))
+	// Tag every log line with the environment so a shared aggregator can
+	// tell deployments apart, not just the boot banner.
+	logger := logging.New(cfg.LogLevel).With(slog.String("env", cfg.AppEnv))
+	logger.Info("app.environment")
+	if !cfg.EnvironmentRecognized() {
+		logger.Warn("app.environment.unrecognized", slog.Any("expected", config.KnownEnvironments))
+	}
 	gin.SetMode(cfg.GinMode)
 
 	injector := do.New()

@@ -1,6 +1,9 @@
 version: "3"
 
-dotenv: [".env", ".env.local"]
+# .env / .env.local carry RUNTIME config (DB_URL, BROKER_URL, AUTH_ISSUER
+# pointing at real services). They are loaded per-task (dotenv: below) only
+# on the tasks that actually run the app or talk to those services — never
+# on test/cover/lint, which must run in a clean, hermetic environment.
 
 vars:
   ATLAS_IMAGE: arigaio/atlas
@@ -15,6 +18,7 @@ tasks:
 
   run:
     desc: Run the API locally
+    dotenv: [".env", ".env.local"]
     cmds:
       - go run ./cmd/api
 
@@ -85,6 +89,7 @@ tasks:
 
   migrate:apply:
     desc: Apply pending migrations (needs postgres up; DB_URL from .env or default)
+    dotenv: [".env", ".env.local"]
     cmds:
       - >-
         docker run --rm --network host -v {{.TASKFILE_DIR}}/migrations:/migrations
@@ -93,6 +98,7 @@ tasks:
 
   migrate:status:
     desc: Show migration status against the database
+    dotenv: [".env", ".env.local"]
     cmds:
       - >-
         docker run --rm --network host -v {{.TASKFILE_DIR}}/migrations:/migrations
@@ -108,11 +114,13 @@ tasks:
 
   rebuild:
     desc: Rebuild every read-model projection from the event store (needs DB_URL)
+    dotenv: [".env", ".env.local"]
     cmds:
       - go run ./cmd/rebuild
 
   redrive:
     desc: Republish archived dead letters to their topics (needs DB_URL + BROKER_URL)
+    dotenv: [".env", ".env.local"]
     cmds:
       - go run ./cmd/redrive
 

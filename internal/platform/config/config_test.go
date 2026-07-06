@@ -52,6 +52,18 @@ func TestAuthConfig(t *testing.T) {
 	assert.Equal(t, "other-client", cfg.AuthClientID)
 }
 
+func TestAppEnvNormalizationAndRecognition(t *testing.T) {
+	t.Setenv("APP_ENV", "  PROD ")
+	cfg := config.Load()
+	assert.Equal(t, "prod", cfg.AppEnv, "trimmed and lowercased")
+	assert.True(t, cfg.EnvironmentRecognized())
+
+	t.Setenv("APP_ENV", "qa")
+	cfg = config.Load()
+	assert.Equal(t, "qa", cfg.AppEnv, "unknown values are kept verbatim")
+	assert.False(t, cfg.EnvironmentRecognized(), "but flagged as unrecognized")
+}
+
 func TestSagaStepTimeoutParsing(t *testing.T) {
 	t.Setenv("SAGA_STEP_TIMEOUT", "90s")
 	assert.Equal(t, 90*time.Second, config.Load().SagaStepTimeout)

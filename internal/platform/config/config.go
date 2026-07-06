@@ -9,9 +9,12 @@ import (
 )
 
 type Config struct {
-	// AppEnv names the environment this instance runs in (local, dev,
-	// staging, prod). It is a label for logs and telemetry to differentiate
-	// deployments; it does not change behavior. Defaults to "local".
+	// AppEnv names the environment this instance runs in (see
+	// KnownEnvironments). It is a label for logs and telemetry to
+	// differentiate deployments; it does not change behavior. Normalized to
+	// lowercase, defaults to "local". Unrecognized values are kept as-is
+	// (see EnvironmentRecognized) so the composition root can warn on typos
+	// without silently mislabeling the instance.
 	AppEnv   string
 	HTTPAddr string
 	LogLevel string
@@ -58,7 +61,7 @@ type Config struct {
 // development defaults.
 func Load() Config {
 	cfg := Config{
-		AppEnv:          getEnv("APP_ENV", "local"),
+		AppEnv:          appEnv(),
 		HTTPAddr:        getEnv("HTTP_ADDR", ":8080"),
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		GinMode:         getEnv("GIN_MODE", "release"),
@@ -80,6 +83,29 @@ func Load() Config {
 		cfg.AuthJWKSURL = cfg.AuthIssuer + "/protocol/openid-connect/certs"
 	}
 	return cfg
+}
+
+// KnownEnvironments are the canonical APP_ENV values. Other values are
+// still honored (kept verbatim), but flagged as unrecognized so a typo
+// surfaces at startup instead of silently tagging every log and trace.
+var KnownEnvironments = []string{"local", "dev", "staging", "prod"}
+
+// EnvironmentRecognized reports whether AppEnv is one of KnownEnvironments.
+func (c Config) EnvironmentRecognized() bool {
+	for _, env := range KnownEnvironments {
+		if c.AppEnv == env {
+			return true
+		}
+	}
+	return false
+}
+
+func appEnv() string {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if value == "" {
+		return "local"
+	}
+	return value
 }
 
 func getList(key string) []string {
