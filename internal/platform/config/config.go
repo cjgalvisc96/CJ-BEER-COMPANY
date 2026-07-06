@@ -9,6 +9,10 @@ import (
 )
 
 type Config struct {
+	// AppEnv names the environment this instance runs in (local, dev,
+	// staging, prod). It is a label for logs and telemetry to differentiate
+	// deployments; it does not change behavior. Defaults to "local".
+	AppEnv   string
 	HTTPAddr string
 	LogLevel string
 	GinMode  string
@@ -54,6 +58,7 @@ type Config struct {
 // development defaults.
 func Load() Config {
 	cfg := Config{
+		AppEnv:          getEnv("APP_ENV", "local"),
 		HTTPAddr:        getEnv("HTTP_ADDR", ":8080"),
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		GinMode:         getEnv("GIN_MODE", "release"),

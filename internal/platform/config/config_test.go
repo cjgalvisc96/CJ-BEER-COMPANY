@@ -10,10 +10,14 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	t.Setenv("DB_URL", "")
-	t.Setenv("BROKER_URL", "")
+	// Hermetic: clear every var asserted below so an ambient .env (loaded
+	// by `task test`/`task cover`) or an exported shell var can't leak in.
+	for _, key := range []string{"APP_ENV", "HTTP_ADDR", "LOG_LEVEL", "GIN_MODE", "DB_URL", "BROKER_URL", "SAGA_STEP_TIMEOUT"} {
+		t.Setenv(key, "")
+	}
 	cfg := config.Load()
 
+	assert.Equal(t, "local", cfg.AppEnv, "environment defaults to local")
 	assert.Equal(t, ":8080", cfg.HTTPAddr)
 	assert.Equal(t, "info", cfg.LogLevel)
 	assert.Equal(t, "release", cfg.GinMode)
@@ -30,6 +34,7 @@ func TestBrokerURLFromEnvironment(t *testing.T) {
 func TestAuthConfig(t *testing.T) {
 	t.Setenv("AUTH_ISSUER", "")
 	t.Setenv("AUTH_JWKS_URL", "")
+	t.Setenv("AUTH_CLIENT_ID", "")
 	cfg := config.Load()
 	assert.Empty(t, cfg.AuthIssuer, "auth disabled by default")
 	assert.Empty(t, cfg.AuthJWKSURL, "no JWKS derived while disabled")
@@ -66,9 +71,11 @@ func TestLoadFromEnvironment(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("GIN_MODE", "") // empty falls back to the default
 	t.Setenv("DB_URL", "postgres://beer@localhost/beer")
+	t.Setenv("APP_ENV", "staging")
 
 	cfg := config.Load()
 
+	assert.Equal(t, "staging", cfg.AppEnv)
 	assert.Equal(t, ":9999", cfg.HTTPAddr)
 	assert.Equal(t, "debug", cfg.LogLevel)
 	assert.Equal(t, "release", cfg.GinMode)
@@ -76,6 +83,10 @@ func TestLoadFromEnvironment(t *testing.T) {
 }
 
 func TestHardeningAndTelemetryConfig(t *testing.T) {
+	// Hermetic: clear the vars this test reads as defaults (see TestLoadDefaults).
+	for _, key := range []string{"OTEL_SERVICE_NAME", "RATE_LIMIT_RPS", "RATE_LIMIT_BURST", "MAX_BODY_BYTES", "OTEL_EXPORTER_OTLP_ENDPOINT"} {
+		t.Setenv(key, "")
+	}
 	cfg := config.Load()
 	assert.Equal(t, "cj-beer-company", cfg.ServiceName)
 	assert.Equal(t, 50.0, cfg.RateLimitRPS)
@@ -102,6 +113,7 @@ func TestHardeningAndTelemetryConfig(t *testing.T) {
 
 func TestTrustedProxiesAndOutboxConfig(t *testing.T) {
 	t.Setenv("TRUSTED_PROXIES", "")
+	t.Setenv("OUTBOX_INTERVAL", "")
 	cfg := config.Load()
 	assert.Nil(t, cfg.TrustedProxies, "trust none by default")
 	assert.Equal(t, 250*time.Millisecond, cfg.OutboxInterval)

@@ -41,6 +41,7 @@ type App struct {
 
 func New(cfg config.Config) (*App, error) {
 	logger := logging.New(cfg.LogLevel)
+	logger.Info("app.environment", slog.String("env", cfg.AppEnv))
 	gin.SetMode(cfg.GinMode)
 
 	injector := do.New()
