@@ -5,6 +5,10 @@ built throughout *Domain-Driven Refactoring* (Colla & Acerbis), at the end
 state of the book's refactoring journey: a **modular monolith with CQRS and
 event sourcing** (the book's `03-monolith_with_cqrs_and_event_sourcing`).
 
+> New to modular monoliths, CQRS, event sourcing or sagas? Read
+> [concepts.md](concepts.md) first — it explains every pattern named on this
+> page in plain English. This document assumes those terms are familiar.
+
 ## Modules (bounded contexts)
 
 | Module | Aggregate | Responsibility |
@@ -52,7 +56,10 @@ library used by BrewUp. It provides:
   uncommitted; `ApplyEvent` routes to the aggregate's apply methods and
   bumps `Version`
 - `EventStoreRepository` — `GetByID` replays the stream; `Save` appends
-  uncommitted events with optimistic concurrency, then publishes them
+  uncommitted events with optimistic concurrency. In durable mode it also
+  writes each event to an `outbox` table **in the same transaction**, and the
+  `OutboxRelay` publishes from there (no crash can lose a message — ADR-0012);
+  in-memory mode publishes directly
 - Two `EventStore` adapters — `InMemoryEventStore` (dev, tests) and
   `PostgresEventStore` (production: the `events` table in `migrations/`,
   concurrency via head check + primary key). `DB_URL` selects the mode
@@ -75,7 +82,8 @@ POST /v1/sales
   → CreateSalesOrderCommandHandler → SalesOrder factory checks invariants
       → RaiseEvent(SalesOrderCreated)
   → Repository.Save appends to the SalesOrder-<id> stream (event store)
-      → bus publishes SalesOrderCreated
+      → durable mode: an outbox row is written in the SAME transaction; the
+        relay publishes SalesOrderCreated (in-memory mode publishes directly)
   → readmodel: SalesOrderCreatedEventHandler projects the SalesOrder DTO
   → integration: sales republishes SalesOrderCreated as an INTEGRATION event
   → warehouses: consumes it (consumer-driven contract), sends
@@ -85,6 +93,26 @@ POST /v1/sales
       → republished as integration event → Sales is notified
 GET /v1/sales, /v1/warehouses/availability   ← read models (eventually consistent)
 ```
+
+## Production & operability
+
+The same binary runs zero-dependency for dev/tests and fully durable in
+production; environment variables flip each concern independently (see
+[concepts.md → Running it in production](concepts.md#running-it-in-production)):
+
+| Concern | Off (empty env) | On | Where | ADR |
+|---|---|---|---|---|
+| Persistence | in-memory | Postgres event store + read models (`DB_URL`) | `muflone`, `internal/platform/database` | 0006 |
+| Messaging | in-process bus | RabbitMQ, durable + multi-replica (`BROKER_URL`) | `muflone` transport | 0009 |
+| At-least-once delivery | direct publish | transactional outbox + relay (`OUTBOX_INTERVAL`) | `muflone/outbox.go` | 0012 |
+| Reliability | retry then log | concurrency-aware retries → dead-letter archive → `task redrive` | `muflone/retry.go`, `deadletters.go` | 0012 |
+| Auth | open API | OIDC bearer tokens + RBAC (`AUTH_ISSUER`) | `internal/platform/auth`, `internal/rest/auth.go` | 0010 |
+| Tracing | metrics only | OTLP traces across HTTP + bus hops (`OTEL_EXPORTER_OTLP_ENDPOINT`) | `internal/platform/telemetry` | 0011 |
+| Edge hardening | always on | idempotency, pagination, rate limit, body cap, trusted proxies | `internal/rest` | 0011 |
+
+Everything is tagged with `APP_ENV` (`local`/`dev`/`staging`/`prod`): it labels
+every log line and the OpenTelemetry `deployment.environment` on traces and
+metrics, so a shared backend never confuses environments.
 
 ## Rules enforced by construction and by fitness tests
 

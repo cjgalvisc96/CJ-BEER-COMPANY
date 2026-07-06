@@ -6,6 +6,11 @@ with CQRS and event sourcing**.
 
 ## Core concepts
 
+> **New to DDD, CQRS, event sourcing or sagas?**
+> [`docs/architecture/concepts.md`](docs/architecture/concepts.md) explains
+> every pattern below in plain English, with a brewery example and a pointer to
+> where each one lives in the code. Start there, then this section is a summary.
+
 - **Two bounded contexts**, isolated modules that never import each other:
   - **`sales`** — customer orders (`CreateSalesOrder` → `SalesOrderCreated`)
   - **`warehouses`** — beer availability (production orders fill it, sales orders allocate from it)
@@ -64,7 +69,10 @@ with CQRS and event sourcing**.
   (`task check:architecture`) fail the build on any forbidden dependency, and
   a hard gate requires **100% unit-test coverage** (`task cover`).
 
-Deep dives: [`docs/`](docs/) (architecture overview, message catalog, ADRs).
+Deep dives: [`docs/`](docs/) — [patterns in plain
+English](docs/architecture/concepts.md), [architecture
+overview](docs/architecture/overview.md), [message
+catalog](docs/architecture/events.md), and [ADRs](docs/adr/).
 
 ## Installation
 
