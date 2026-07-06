@@ -77,7 +77,7 @@ func TestBodyLimitReturns413(t *testing.T) {
 }
 
 func TestMetricsEndpointServesPrometheus(t *testing.T) {
-	handler, err := telemetry.InitMetrics("cj-beer-company-test")
+	handler, err := telemetry.InitMetrics("cj-beer-company-test", "test")
 	require.NoError(t, err)
 	router := routerWith(t, rest.Options{MetricsHandler: handler, TracingEnabled: true})
 

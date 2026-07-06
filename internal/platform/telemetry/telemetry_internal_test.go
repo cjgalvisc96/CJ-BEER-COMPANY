@@ -17,7 +17,7 @@ func (failingRegisterer) MustRegister(...prometheus.Collector) {}
 func (failingRegisterer) Unregister(prometheus.Collector) bool { return false }
 
 func TestInitMetricsSurfacesRegistererFailures(t *testing.T) {
-	_, err := initMetrics("svc", failingRegisterer{}, prometheus.NewRegistry())
+	_, err := initMetrics("svc", "test", failingRegisterer{}, prometheus.NewRegistry())
 
 	assert.Error(t, err)
 }

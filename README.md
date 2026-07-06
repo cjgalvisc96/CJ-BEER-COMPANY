@@ -98,11 +98,15 @@ docker build -t cj-beer-company .          # or: task docker:build
 docker run -p 8080:8080 cj-beer-company
 ```
 
-Configuration via environment (see `.env.example`): `HTTP_ADDR`, `LOG_LEVEL`,
-`GIN_MODE`, `DB_URL` (empty = in-memory, Postgres URL = durable), `BROKER_URL`
-(empty = in-process bus, AMQP URL = RabbitMQ), `AUTH_ISSUER`/`AUTH_JWKS_URL`/
-`AUTH_CLIENT_ID` (empty issuer = open API, OIDC issuer = tokens + RBAC),
-`SAGA_STEP_TIMEOUT`.
+Configuration via environment (see `.env.example`): `APP_ENV`
+(`local`/`dev`/`staging`/`prod` — tags every log line and the OTel
+`deployment.environment`, so mixed backends filter by it), `HTTP_ADDR`,
+`LOG_LEVEL`, `GIN_MODE`, `DB_URL` (empty = in-memory, Postgres URL = durable),
+`BROKER_URL` (empty = in-process bus, AMQP URL = RabbitMQ),
+`AUTH_ISSUER`/`AUTH_JWKS_URL`/`AUTH_CLIENT_ID` (empty issuer = open API, OIDC
+issuer = tokens + RBAC), `SAGA_STEP_TIMEOUT`. For local runs, put overrides in
+`.env.local` — a gitignored overlay that `task run`/`rebuild`/`redrive` load on
+top of `.env` (the test/lint tasks stay on a clean environment).
 
 ## Using the app
 

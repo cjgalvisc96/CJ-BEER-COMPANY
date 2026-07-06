@@ -109,8 +109,8 @@ func New(cfg config.Config) (*App, error) {
 
 	// Observability: Prometheus metrics always (cheap, local); OTLP
 	// traces when an endpoint is configured.
-	shutdownTracing := telemetry.InitTracing(context.Background(), cfg.OTELEndpoint, cfg.ServiceName)
-	metricsHandler, err := telemetry.InitMetrics(cfg.ServiceName)
+	shutdownTracing := telemetry.InitTracing(context.Background(), cfg.OTELEndpoint, cfg.ServiceName, cfg.AppEnv)
+	metricsHandler, err := telemetry.InitMetrics(cfg.ServiceName, cfg.AppEnv)
 	if err != nil {
 		return nil, fmt.Errorf("init metrics: %w", err)
 	}

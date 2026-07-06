@@ -23,7 +23,7 @@ import (
 // InitTracing installs the global tracer provider and W3C propagation.
 // With an empty endpoint only propagation is set (spans are no-ops); the
 // returned shutdown is safe to call either way.
-func InitTracing(ctx context.Context, endpoint, serviceName string) func(context.Context) error {
+func InitTracing(ctx context.Context, endpoint, serviceName, env string) func(context.Context) error {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{}, propagation.Baggage{},
 	))
@@ -36,31 +36,39 @@ func InitTracing(ctx context.Context, endpoint, serviceName string) func(context
 	exporter, _ := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL, semconv.ServiceName(serviceName),
-		)),
+		sdktrace.WithResource(newResource(serviceName, env)),
 	)
 	otel.SetTracerProvider(provider)
 	return provider.Shutdown
 }
 
-// InitMetrics installs a Prometheus-backed global meter provider and
-// returns the handler to mount at /metrics.
-func InitMetrics(serviceName string) (http.Handler, error) {
-	registry := prometheus.NewRegistry()
-	return initMetrics(serviceName, registry, registry)
+// newResource identifies this service in traces and metrics: a stable
+// service.name across all environments, with deployment.environment
+// carrying the local/dev/staging/prod distinction (so backends filter and
+// group by it instead of seeing four different services).
+func newResource(serviceName, env string) *resource.Resource {
+	return resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(serviceName),
+		semconv.DeploymentEnvironment(env),
+	)
 }
 
-func initMetrics(serviceName string, registerer prometheus.Registerer, gatherer prometheus.Gatherer) (http.Handler, error) {
+// InitMetrics installs a Prometheus-backed global meter provider and
+// returns the handler to mount at /metrics.
+func InitMetrics(serviceName, env string) (http.Handler, error) {
+	registry := prometheus.NewRegistry()
+	return initMetrics(serviceName, env, registry, registry)
+}
+
+func initMetrics(serviceName, env string, registerer prometheus.Registerer, gatherer prometheus.Gatherer) (http.Handler, error) {
 	exporter, err := otelprom.New(otelprom.WithRegisterer(registerer))
 	if err != nil {
 		return nil, err
 	}
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(exporter),
-		sdkmetric.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL, semconv.ServiceName(serviceName),
-		)),
+		sdkmetric.WithResource(newResource(serviceName, env)),
 	)
 	otel.SetMeterProvider(provider)
 	return promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}), nil
