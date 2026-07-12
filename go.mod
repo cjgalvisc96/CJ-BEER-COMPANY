@@ -6,7 +6,7 @@ require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/ThreeDotsLabs/watermill-amqp/v3 v3.1.0
-	github.com/coreos/go-oidc/v3 v3.19.0
+	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
